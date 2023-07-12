@@ -6,6 +6,8 @@ from model.basic_modules import get_norm, get_act, ConvNormAct, LayerScale2D, MS
 
 from model import MODEL
 
+import torch.utils.checkpoint as checkpoint
+
 inplace = True
 
 
@@ -189,15 +191,15 @@ class EMO(nn.Module):
 	
 	def forward_features(self, x):
 		for blk in self.stage0:
-			x = blk(x)
+			x = checkpoint.checkpoint(blk, x.requires_grad_())
 		for blk in self.stage1:
-			x = blk(x)
+			x = checkpoint.checkpoint(blk, x.requires_grad_())
 		for blk in self.stage2:
-			x = blk(x)
+			x = checkpoint.checkpoint(blk, x.requires_grad_())
 		for blk in self.stage3:
-			x = blk(x)
+			x = checkpoint.checkpoint(blk, x.requires_grad_())
 		for blk in self.stage4:
-			x = blk(x)
+			x = checkpoint.checkpoint(blk, x.requires_grad_())
 		return x
 	
 	def forward(self, x):
