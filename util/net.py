@@ -50,7 +50,7 @@ def init_training(cfg):
 		torch.cuda.set_device(cfg.local_rank)
 		cfg.master = cfg.rank == cfg.logger_rank
 		cfg.dist_backend = 'nccl'
-		torch.distributed.init_process_group(backend=cfg.dist_backend, init_method=cfg.dist_url)
+		torch.distributed.init_process_group(backend=cfg.dist_backend, init_method=cfg.dist_url, world_size=cfg.world_size, rank=cfg.rank)
 		torch.distributed.barrier()
 	else:
 		cfg.master = True
