@@ -35,6 +35,7 @@ def init_training(cfg):
 	cfg.world_size, cfg.rank, cfg.local_rank = 1, 0, 0
 	cfg.ngpus_per_node = torch.cuda.device_count()
 	if 'SLURM_PROCID' in os.environ:
+		cfg.world_size = int(os.environ['WORLD_SIZE'])
 		cfg.rank = int(os.environ['SLURM_PROCID'])
 		cfg.local_rank = cfg.rank % cfg.ngpus_per_node
 		cfg.nnodes = cfg.world_size // cfg.ngpus_per_node

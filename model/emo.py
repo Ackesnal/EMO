@@ -47,6 +47,23 @@ class iRMB(nn.Module):
         self.proj = nn.Conv2d(self.dim_exp, self.dim_in, kernel_size=1, stride=1, bias=qkv_bias)
         self.proj_drop = nn.Dropout(drop)
         self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
+        
+        # define a parameter table of relative position bias
+        self.relative_position_bias_table = nn.Parameter(torch.zeros((2*window_size-1)**2, self.num_head))  # (2*W-1)^2, nH
+
+        # get pair-wise relative position index for each token inside the window
+        coords_h = torch.arange(self.window_size)
+        coords_w = torch.arange(self.window_size)
+        coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
+        coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
+        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
+        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
+        relative_coords[:, :, 0] += self.window_size - 1  # shift to start from 0
+        relative_coords[:, :, 1] += self.window_size - 1
+        relative_coords[:, :, 0] *= 2 * self.window_size - 1
+        relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
+        self.register_buffer("relative_position_index", relative_position_index)
+        trunc_normal_(self.relative_position_bias_table, std=.02)
     
     def forward(self, x):
         shortcut = x
@@ -76,8 +93,12 @@ class iRMB(nn.Module):
         v_attn, v_idle = torch.chunk(v, chunks=2, dim=1)
         v_attn = rearrange(v_attn, 'b (heads dim_head) h w -> b heads (h w) dim_head', heads=self.num_head, dim_head=self.dim_exp//2//self.num_head).contiguous()
         
+        relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
+            self.window_size*self.window_size, self.window_size*self.window_size, -1)  # Wh*Ww,Wh*Ww,nH
+        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous().unsqueeze(0)  # nH, Wh*Ww, Wh*Ww
+        
         q, k = qk[0], qk[1]
-        v_attn = F.scaled_dot_product_attention(q, k, v_attn, dropout_p=self.attn_drop)
+        v_attn = F.scaled_dot_product_attention(q, k, v_attn, attn_mask=relative_position_bias, dropout_p=self.attn_drop)
         v_attn = rearrange(v_attn, 'b heads (h w) dim_head -> b (heads dim_head) h w', h=h, w=w).contiguous()
         
         # post norm
@@ -94,6 +115,7 @@ class iRMB(nn.Module):
         x = self.proj_drop(x)
         
         x = shortcut + self.drop_path(x)
+        
         return x
 
 
@@ -258,8 +280,8 @@ def EMO_6M(pretrained=False, **kwargs):
 def Shufformer_6M(pretrained=False, **kwargs):
     model = EMO(dim_in=3,
                 img_size=224,
-                depths=[2, 3, 6, 3],
-                dim_stem=32,
+                depths=[2, 2, 7, 3],
+                dim_stem=48,
                 embed_dims=[48, 96, 192, 384],
                 exp_ratios=[2, 3, 4, 4],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'],
@@ -269,7 +291,7 @@ def Shufformer_6M(pretrained=False, **kwargs):
                 qkv_bias=True,
                 attn_drop=0.,
                 drop=0.,
-                drop_path=0.05,
+                drop_path=0.01,
                 group=1,
                 **kwargs)
     return model

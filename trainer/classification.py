@@ -18,7 +18,7 @@ try:
 	from apex.parallel import convert_syncbn_model as ApexSyncBN
 except:
 	from timm.models import convert_sync_batchnorm as ApexSyncBN
-	print('apex is not available, using ApexSyncBN to replace')
+	print('apex is not available, using ApexSyncBN to rename convert_sync_batchnorm')
 from timm.models import convert_sync_batchnorm as TIMMSyncBN
 
 from timm.utils import dispatch_clip_grad
