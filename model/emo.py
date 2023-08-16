@@ -20,6 +20,7 @@ class iRMB(nn.Module):
                  norm_layer="ln_1d",
                  act_layer="gelu",
                  window_size=7,
+                 window_num=1,
                  qkv_bias=True,
                  attn_drop=0.0,
                  drop=0.0,
@@ -34,6 +35,7 @@ class iRMB(nn.Module):
         self.dim_exp = int(dim_in*exp_ratio)
         self.num_head = self.dim_in//self.dim_head
         self.window_size = window_size
+        self.window_num = window_num
         
         self.pre_norm = get_norm(norm_layer)(self.dim_in) 
         self.post_norm = get_norm(norm_layer)(self.dim_exp//2)
@@ -49,7 +51,7 @@ class iRMB(nn.Module):
         self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
         
         # define a parameter table of relative position bias
-        self.relative_position_bias_table = nn.Parameter(torch.zeros((2*window_size-1)**2, self.num_head))  # (2*W-1)^2, nH
+        self.relative_position_bias_table = nn.Parameter(torch.zeros(window_num, (2*window_size-1)**2, self.num_head))  # (2*W-1)^2, nH
 
         # get pair-wise relative position index for each token inside the window
         coords_h = torch.arange(self.window_size)
@@ -62,6 +64,7 @@ class iRMB(nn.Module):
         relative_coords[:, :, 1] += self.window_size - 1
         relative_coords[:, :, 0] *= 2 * self.window_size - 1
         relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
+        relative_position_index = relative_position_index.reshape(1, -1, 1)
         self.register_buffer("relative_position_index", relative_position_index)
         trunc_normal_(self.relative_position_bias_table, std=.02)
     
@@ -93,9 +96,15 @@ class iRMB(nn.Module):
         v_attn, v_idle = torch.chunk(v, chunks=2, dim=1)
         v_attn = rearrange(v_attn, 'b (heads dim_head) h w -> b heads (h w) dim_head', heads=self.num_head, dim_head=self.dim_exp//2//self.num_head).contiguous()
         
-        relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(
-            self.window_size*self.window_size, self.window_size*self.window_size, -1)  # Wh*Ww,Wh*Ww,nH
-        relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous().unsqueeze(0)  # nH, Wh*Ww, Wh*Ww
+        relative_position_bias = torch.gather(self.relative_position_bias_table,
+                                              dim = 1,
+                                              index = self.relative_position_index.expand(self.window_num, -1, self.num_head))
+        relative_position_bias = relative_position_bias.view(self.window_num, 
+                                                             self.window_size*self.window_size, 
+                                                             self.window_size*self.window_size, 
+                                                             self.num_head)
+        relative_position_bias = relative_position_bias.permute(0, 3, 1, 2).contiguous().unsqueeze(0).expand(B,-1,-1,-1,-1).reshape(b, self.num_head, self.window_size*self.window_size, self.window_size*self.window_size)
+        
         
         q, k = qk[0], qk[1]
         v_attn = F.scaled_dot_product_attention(q, k, v_attn, attn_mask=relative_position_bias, dropout_p=self.attn_drop)
@@ -116,6 +125,8 @@ class iRMB(nn.Module):
         
         x = shortcut + self.drop_path(x)
         
+        # rotate
+        x = torch.roll(x, shifts=(2,2), dims=(2,3))
         return x
 
 
@@ -143,6 +154,7 @@ class EMO(nn.Module):
         dprs = [x.item() for x in torch.linspace(0, drop_path, sum(depths))]
         self.stage0 = nn.ModuleList([MSPatchEmb(dim_in, dim_stem, kernel_size=3, c_group=1,
                                                 stride=2, norm_layer="bn_2d", act_layer='silu')])
+        img_size = img_size//2
                                                 
         for i in range(len(depths)):
             layers = []
@@ -153,15 +165,16 @@ class EMO(nn.Module):
                         dim_in = dim_stem
                     else:
                         dim_in = embed_dims[i-1]
-                    layers.append(MSPatchEmb(dim_in, embed_dims[i], kernel_size=3, c_group=1, 
-                                             dilations=[1], stride=2, norm_layer="bn_2d", 
-                                             act_layer='silu'))
+                    layers.append(MSPatchEmb(dim_in, embed_dims[i], kernel_size=3, c_group=1, dilations=[1],
+                                             stride=2, norm_layer="bn_2d", act_layer='silu'))
+                    img_size = img_size//2
                 else:
                     layers.append(iRMB(embed_dims[i], dim_heads[i], exp_ratio=exp_ratios[i], 
                                        norm_layer=norm_layers[i], act_layer=act_layers[i],
-                                       window_size=window_sizes[i], qkv_bias=qkv_bias, 
-                                       attn_drop=attn_drop, drop=drop, drop_path=dpr[j], 
-                                       group=group))
+                                       window_size=window_sizes[i], 
+                                       window_num=(img_size//window_sizes[i])**2,
+                                       qkv_bias=qkv_bias, attn_drop=attn_drop, 
+                                       drop=drop, drop_path=dpr[j], group=group))
                 
             self.__setattr__(f'stage{i + 1}', nn.ModuleList(layers))
 		    
@@ -211,15 +224,30 @@ class EMO(nn.Module):
 
     def forward_features(self, x):
         for blk in self.stage0:
-            x = blk(x)
+            if self.training:
+                x = checkpoint.checkpoint(blk, x.requires_grad_(), use_reentrant=False)
+            else:
+                x = blk(x)
         for blk in self.stage1:
-            x = blk(x)
+            if self.training:
+                x = checkpoint.checkpoint(blk, x.requires_grad_(), use_reentrant=False)
+            else:
+                x = blk(x)
         for blk in self.stage2:
-            x = blk(x)
+            if self.training:
+                x = checkpoint.checkpoint(blk, x.requires_grad_(), use_reentrant=False)
+            else:
+                x = blk(x)
         for blk in self.stage3:
-            x = blk(x)
+            if self.training:
+                x = checkpoint.checkpoint(blk, x.requires_grad_(), use_reentrant=False)
+            else:
+                x = blk(x)
         for blk in self.stage4:
-            x = blk(x)
+            if self.training:
+                x = checkpoint.checkpoint(blk, x.requires_grad_(), use_reentrant=False)
+            else:
+                x = blk(x)
         return x
 
     def forward(self, x):
@@ -280,10 +308,10 @@ def EMO_6M(pretrained=False, **kwargs):
 def Shufformer_6M(pretrained=False, **kwargs):
     model = EMO(dim_in=3,
                 img_size=224,
-                depths=[2, 2, 7, 3],
+                depths=[2, 2, 14, 2],
                 dim_stem=48,
                 embed_dims=[48, 96, 192, 384],
-                exp_ratios=[2, 3, 4, 4],
+                exp_ratios=[2, 2, 2, 2],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'],
                 act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dim_heads=[16, 16, 16, 16],
