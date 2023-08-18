@@ -108,25 +108,40 @@ class ConvNormAct(nn.Module):
 
 # ========== Multi-Scale Populations, for down-sampling and inductive bias ==========
 class MSPatchEmb(nn.Module):
-	
-	def __init__(self, dim_in, emb_dim, kernel_size=2, c_group=-1, stride=1, dilations=[1, 2, 3],
-				 norm_layer='bn_2d', act_layer='silu'):
-		super().__init__()
-		self.dilation_num = len(dilations)
-		assert dim_in % c_group == 0
-		c_group = math.gcd(dim_in, emb_dim) if c_group == -1 else c_group
-		self.convs = nn.ModuleList()
-		for i in range(len(dilations)):
-			padding = math.ceil(((kernel_size - 1) * dilations[i] + 1 - stride) / 2)
-			self.convs.append(nn.Sequential(
-				nn.Conv2d(dim_in, emb_dim, kernel_size, stride, padding, dilations[i], groups=c_group),
-				get_norm(norm_layer)(emb_dim),
-				get_act(act_layer)(emb_dim)))
-	
-	def forward(self, x):
-		if self.dilation_num == 1:
-			x = self.convs[0](x)
-		else:
-			x = torch.cat([self.convs[i](x).unsqueeze(dim=-1) for i in range(self.dilation_num)], dim=-1)
-			x = reduce(x, 'b c h w n -> b c h w', 'mean').contiguous()
-		return x
+    def __init__(self, dim_in, emb_dim, kernel_size=2, c_group=-1, stride=1, dilations=[1, 2, 3],
+                 norm_layer='bn_2d', act_layer='silu', pre_norm=False):
+        
+        super().__init__()
+        self.dilation_num = len(dilations)
+        assert dim_in % c_group == 0
+        c_group = math.gcd(dim_in, emb_dim) if c_group == -1 else c_group
+        self.convs = nn.ModuleList()
+        for i in range(len(dilations)):
+            padding = math.ceil(((kernel_size - 1) * dilations[i] + 1 - stride) / 2)
+            if pre_norm:
+                self.convs.append(nn.Sequential(get_norm(norm_layer)(dim_in),
+                                                nn.Conv2d(dim_in,
+                                                          emb_dim,
+                                                          kernel_size,
+                                                          stride,
+                                                          padding,
+                                                          dilations[i],
+                                                          groups=c_group),
+    			                                      get_act(act_layer)(emb_dim)))
+            else:
+                self.convs.append(nn.Sequential(nn.Conv2d(dim_in,
+                                                          emb_dim,
+                                                          kernel_size,
+                                                          stride,
+                                                          padding,
+                                                          dilations[i],
+                                                          groups=c_group),
+                                                get_norm(norm_layer)(emb_dim),
+    			                                      get_act(act_layer)(emb_dim)))                                                                                                
+    def forward(self, x):
+        if self.dilation_num == 1:
+            x = self.convs[0](x)
+        else:
+            x = torch.cat([self.convs[i](x).unsqueeze(dim=-1) for i in range(self.dilation_num)], dim=-1)
+            x = reduce(x, 'b c h w n -> b c h w', 'mean').contiguous()
+        return x
