@@ -26,7 +26,8 @@ class iRMB(nn.Module):
                  attn_drop=0.0,
                  drop=0.0,
                  drop_path=0.0,
-                 group=1):
+                 group=1,
+                 shuffle=False):
         
         super().__init__()
         
@@ -66,6 +67,8 @@ class iRMB(nn.Module):
         relative_position_index = relative_position_index.reshape(1, 1, -1)
         self.register_buffer("relative_position_index", relative_position_index)
         trunc_normal_(self.relative_position_bias_table, std=.02)
+        
+        self.shuffle = shuffle
     
     def forward(self, x):
         shortcut = x
@@ -121,8 +124,9 @@ class iRMB(nn.Module):
         
         x = shortcut + self.drop_path(x)
         
-        # rotate
-        x = x.reshape(B, C, self.window_size, n1, self.window_size, n2).permute(0,1,3,2,5,4).reshape(B,C,H,W)
+        if self.shuffle:
+            # rotate
+            x = x.reshape(B, C, 2, H//2, 2, W//2).permute(0,1,3,2,5,4).reshape(B,C,H,W)
         return x
 
 
@@ -174,7 +178,8 @@ class EMO(nn.Module):
                                    window_size=window_sizes[i], 
                                    window_num=(img_size//window_sizes[i])**2,
                                    qkv_bias=qkv_bias, attn_drop=attn_drop, 
-                                   drop=drop, drop_path=dpr[j], group=group))
+                                   drop=drop, drop_path=dpr[j], group=group,
+                                   shuffle=True if i<len(depths)-1 else False))
                 
             self.__setattr__(f'stage{i + 1}', nn.ModuleList(layers))
 		    
@@ -308,14 +313,14 @@ def EMO_6M(pretrained=False, **kwargs):
 def Shufformer_6M(pretrained=False, **kwargs):
     model = EMO(dim_in=3,
                 img_size=224,
-                depths=[2, 2, 10, 2],
+                depths=[3, 3, 10, 3],
                 dim_stem=48,
-                embed_dims=[48, 96, 192, 384],
+                embed_dims=[48, 80, 160, 320],
                 exp_ratios=[3, 3, 3, 3],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'],
                 act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dim_heads=[16, 16, 16, 16],
-                window_sizes=[4, 4, 7, 7],
+                window_sizes=[3, 5, 7, 7],
                 qkv_bias=True,
                 attn_drop=0.,
                 drop=0.,
