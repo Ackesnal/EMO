@@ -149,7 +149,8 @@ class EMO(nn.Module):
         assert num_classes > 0
         dprs = [x.item() for x in torch.linspace(0, drop_path, sum(depths))]
         self.stage0 = nn.ModuleList([MSPatchEmb(dim_in, dim_stem, kernel_size=3, c_group=1,
-                                                stride=2, norm_layer="none", act_layer='none')])
+                                                stride=2, norm_layer="ln_2d", act_layer='gelu',
+                                                pre_norm=True)])
         img_size = img_size//2
                                                 
         for i in range(len(depths)):
@@ -161,8 +162,9 @@ class EMO(nn.Module):
                 dim_in = embed_dims[i-1]
             
             # Downsampling
-            layers.append(nn.AdaptiveAvgPool2d((img_size//2,img_size//2)))
-            layers.append(nn.Conv2d(dim_in, embed_dims[i], kernel_size=1, stride=1))
+            layers.append(MSPatchEmb(dim_in, embed_dims[i], kernel_size=3, c_group=1,
+                                     stride=2, norm_layer="ln_2d", act_layer='gelu',
+                                     dilations=[1], pre_norm=True))
             img_size = img_size//2
             
             # Integrated MHSA
@@ -313,7 +315,7 @@ def Shufformer_6M(pretrained=False, **kwargs):
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'],
                 act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dim_heads=[16, 16, 16, 16],
-                window_sizes=[7, 7, 7, 7],
+                window_sizes=[4, 4, 7, 7],
                 qkv_bias=True,
                 attn_drop=0.,
                 drop=0.,
