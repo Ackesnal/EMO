@@ -64,7 +64,7 @@ trainer.mixup_kwargs = dict(
 
 trainer.scale_kwargs = dict(n_scale=0, base_h=size, base_w=size, min_h=160, max_h=320, min_w=160, max_w=320, check_scale_div_factor=32)
 
-trainer.start_test_epoch = 0
+trainer.start_test_epoch = 200
 trainer.every_test_epoch = 5
 trainer.find_unused_parameters = False
 trainer.sync_BN = 'none'  # [none, native, apex, timm]

@@ -12,69 +12,76 @@ import torch.nn as nn
 
 inplace = True
 
-
 class iRMB(nn.Module):
     def __init__(self,
-                 dim_in, 
-                 dim_head,
+                 dim_in,
                  exp_ratio,
-                 norm_layer="ln_1d",
-                 act_layer="gelu",
                  window_size=7,
-                 window_num=1,
-                 qkv_bias=True,
-                 attn_drop=0.0,
+                 dim_head=16,
                  drop=0.0,
                  drop_path=0.0,
-                 group=1,
-                 shuffle=False):
+                 shuffle=False,
+                 layer_scale_init_value=1e-6):
         
         super().__init__()
         
-        assert dim_in % dim_head == 0, 'dim should be divisible by num_heads'
         self.dim_in = dim_in
-        self.dim_head = dim_head
-        self.dim_exp = int(dim_in*exp_ratio)
-        self.num_head = self.dim_in//self.dim_head
         self.window_size = window_size
-        self.window_num = window_num
         
-        self.norm = get_norm(norm_layer)(self.dim_in)
+        # define a parameter table of relative position bias
+        #self.relative_pos_biases = nn.Parameter(torch.zeros((dim_in, self.window_size**2, self.window_size**2)))  # (2*W-1)^2, nH
+        #trunc_normal_(self.relative_pos_biases, std=.02)
         
-        self.qk = nn.Conv2d(self.dim_in, self.dim_in*2, kernel_size=1, stride=1, bias=qkv_bias, groups=group)
-        self.v = nn.Conv2d(self.dim_in, self.dim_exp, kernel_size=1, stride=1, bias=qkv_bias, groups=group)
-        self.attn_drop = attn_drop
+        """
+        # define a parameter table of relative position bias
+        self.relative_pos_biases = nn.Parameter(torch.zeros((dim_in, (2*self.window_size-1)**2+1)))  # (2*W-1)^2, nH
+        trunc_normal_(self.relative_pos_biases, std=.02)
+        self.relative_pos_indices = self.generate_pos_indices(H = self.window_size, 
+                                                              W = self.window_size, 
+                                                              K = self.window_size*2-1) # wh*ww, wh*ww
+        self.relative_pos_bias = torch.gather(self.relative_pos_biases.unsqueeze(1).expand(-1, window_size*window_size, -1),
+                                              2,
+                                              self.relative_pos_indices.unsqueeze(0).expand(dim_in, -1, -1))
+        """
         
+        self.conv3 = nn.Conv2d(dim_in, dim_in, kernel_size=3, groups=dim_in, 
+                               stride=1, padding="same", dilation=1)
+        self.conv5 = nn.Conv2d(dim_in, dim_in, kernel_size=5, groups=dim_in, 
+                               stride=1, padding="same", dilation=1)
+        self.conv7 = nn.Conv2d(dim_in, dim_in, kernel_size=7, groups=dim_in, 
+                               stride=1, padding="same", dilation=1)
+        self.qk = nn.Conv2d(dim_in, dim_in, kernel_size=1, stride=1)
+        
+        self.norm = nn.LayerNorm(dim_in)
         self.act = nn.GELU()
-        self.proj = nn.Conv2d(self.dim_exp, self.dim_in, kernel_size=1, stride=1, bias=qkv_bias)
+        self.proj1 = nn.Conv2d(dim_in, dim_in*exp_ratio, kernel_size=1, stride=1)
+        self.proj2 = nn.Conv2d(dim_in*exp_ratio, dim_in, kernel_size=1, stride=1)
         self.proj_drop = nn.Dropout(drop)
         self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
         
-        # define a parameter table of relative position bias
-        self.relative_position_bias_table = nn.Parameter(torch.zeros((1, self.num_head, (2*window_size-1)**2)))  # (2*W-1)^2, nH
-        
-        # get pair-wise relative position index for each token inside the window
-        coords_h = torch.arange(self.window_size)
-        coords_w = torch.arange(self.window_size)
-        coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
-        coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
-        relative_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # 2, Wh*Ww, Wh*Ww
-        relative_coords = relative_coords.permute(1, 2, 0).contiguous()  # Wh*Ww, Wh*Ww, 2
-        relative_coords[:, :, 0] += self.window_size - 1  # shift to start from 0
-        relative_coords[:, :, 1] += self.window_size - 1
-        relative_coords[:, :, 0] *= 2 * self.window_size - 1
-        relative_position_index = relative_coords.sum(-1)  # Wh*Ww, Wh*Ww
-        relative_position_index = relative_position_index.reshape(1, 1, -1)
-        self.register_buffer("relative_position_index", relative_position_index)
-        trunc_normal_(self.relative_position_bias_table, std=.02)
+        self.gamma_conv3 = nn.Parameter(layer_scale_init_value * torch.ones((dim_in)), 
+                                        requires_grad=True) if layer_scale_init_value > 0 else None
+        self.gamma_conv5 = nn.Parameter(layer_scale_init_value * torch.ones((dim_in)), 
+                                        requires_grad=True) if layer_scale_init_value > 0 else None
+        self.gamma_conv7 = nn.Parameter(layer_scale_init_value * torch.ones((dim_in)),
+                                        requires_grad=True) if layer_scale_init_value > 0 else None
+        self.gamma_attn = nn.Parameter(layer_scale_init_value * torch.ones((dim_in)), 
+                                       requires_grad=True) if layer_scale_init_value > 0 else None
+        self.gamma_proj = nn.Parameter(layer_scale_init_value * torch.ones((dim_in)), 
+                                       requires_grad=True) if layer_scale_init_value > 0 else None         
         
         self.shuffle = shuffle
-    
+        self.dim_head = dim_head
+        self.num_head = dim_in // self.dim_head
+        
     def forward(self, x):
+        """
+        x: B*C*H*W
+        """
         shortcut = x
         B, C, H, W = x.shape
         
-        # padding & reshape
+        # Conver to windows
         if self.window_size <= 0:
             window_size_W, window_size_H = W, H
         else:
@@ -84,50 +91,91 @@ class iRMB(nn.Module):
         pad_b = (window_size_H - H % window_size_H) % window_size_H
         x = F.pad(x, (pad_l, pad_r, pad_t, pad_b, 0, 0,))
         n1, n2 = (H + pad_b) // window_size_H, (W + pad_r) // window_size_W
-        x = rearrange(x, 'b c (h1 n1) (w1 n2) -> (b n1 n2) c h1 w1', n1=n1, n2=n2).contiguous()
+        x = rearrange(x, 'b c (h1 n1) (w1 n2) -> (b n1 n2) c h1 w1', n1=n1, n2=n2).contiguous() # B*nh*nw, C, wh, ww
         
-        # pre norm
-        x = self.norm(x)
-        
-        # attention
         b, c, h, w = x.shape
-        qk = self.qk(x)
-        qk = rearrange(qk, 'b (qk heads dim_head) h w -> qk b heads (h w) dim_head', qk=2, heads=self.num_head, dim_head=self.dim_head).contiguous()
         
-        v = self.v(x)
-        v = rearrange(v, 'b (heads dim_head) h w -> b heads (h w) dim_head', heads=self.num_head, dim_head=self.dim_exp//self.num_head).contiguous()
+        # Convolutional layers
+        x_conv3 = self.conv3(x) # B*nh*nw, C, wh, ww
+        x_conv5 = self.conv5(x) # B*nh*nw, C, wh, ww
+        x_conv7 = self.conv7(x) # B*nh*nw, C, wh, ww
         
-        relative_position_bias = torch.gather(self.relative_position_bias_table,
-                                              dim=2,
-                                              index=self.relative_position_index.expand(1, self.num_head, -1))
-                                              
-        relative_position_bias = relative_position_bias.view(1, self.num_head,
-                                                             self.window_size*self.window_size, 
-                                                             self.window_size*self.window_size)
         
-        v = F.scaled_dot_product_attention(qk[0], 
-                                           qk[1],
-                                           v,
-                                           attn_mask=relative_position_bias.type(qk.dtype),
-                                           dropout_p=self.attn_drop)
-                                                
-        v = rearrange(v, 'b heads (h w) dim_head -> b (heads dim_head) h w', h=h, w=w).contiguous()
+        # MHSA layer
+        x_qk = self.qk(x) # B*nh*nw, C, wh, ww
+        x_qk = x_qk.reshape(b, c, h*w).permute(0,2,1) # B*nh*nw, wh*ww, C
+        x_q, x_k = x_qk[:,:,:c//2], x_qk[:,:,c//2:] # B*nh*nw, wh*ww, C/2
+        x_q = x_q.reshape(b, h*w, self.num_head, -1).transpose(1,2).contiguous() # B*nh*nw, head, wh*ww, C//2//head
+        x_k = x_k.reshape(b, h*w, self.num_head, -1).transpose(1,2).contiguous() # B*nh*nw, head, wh*ww, C//2//head
+        x_v = x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(2,3).contiguous() # B*nh*nw, head, wh*ww, C//head
+        
+        # self.relative_pos_bias = self.relative_pos_bias.unsqueeze(0).expand(b, -1, -1, -1) # B*nh*nw, C, wh*ww, wh*ww
+        x_attn = F.scaled_dot_product_attention(x_q, x_k, x_v) # B*nh*nw, head, wh*ww, C//head
+        x_attn = x_attn.transpose(2,3).reshape(b, c, h, w)
+        
+        
+        # concatenate
+        x = x_conv3 * self.gamma_conv3.reshape(1,-1,1,1) + \
+            x_conv5 * self.gamma_conv5.reshape(1,-1,1,1) + \
+            x_conv7 * self.gamma_conv7.reshape(1,-1,1,1) + \
+            x_attn * self.gamma_attn.reshape(1,-1,1,1)
         
         # unpadding
-        x = rearrange(v, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2).contiguous()
+        x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2).contiguous()
         if pad_r > 0 or pad_b > 0:
             x = x[:, :, :H, :W].contiguous()
         
+        x = shortcut + self.drop_path(x)
+        
+        shortcut = x
+        x = self.norm(x.permute(0,2,3,1)).permute(0,3,1,2)
+        x = self.proj1(x)
         x = self.act(x)
-        x = self.proj(x)
-        x = self.proj_drop(x)
+        x = self.proj2(x)
+        x = x * self.gamma_proj.reshape(1,-1,1,1)
         
         x = shortcut + self.drop_path(x)
         
         if self.shuffle:
             # rotate
             x = x.reshape(B, C, 2, H//2, 2, W//2).permute(0,1,3,2,5,4).reshape(B,C,H,W)
-        return x
+        return x                     
+        
+    def generate_pos_indices(self, H, W, K):
+        """
+        Generate the indices for testing phase
+        """
+        # Total number of pixels
+        N = H * W
+        
+        # Create a tensor representing the 2D coordinates of each pixel in the image
+        coords = torch.stack(torch.meshgrid(torch.arange(H+1), torch.arange(W+1)), dim=-1)
+        
+        # Compute the relative positions for each pixel with its KxK neighborhood
+        half_K = K // 2
+        relative_coords = torch.stack([coords + torch.tensor([[i - half_K, j - half_K]]) for i in range(K) for j in range(K)], dim=2)
+        
+        # Handle boundary conditions by clamping the coordinates
+        relative_coords[..., 0].clamp_(0, H)
+        relative_coords[..., 1].clamp_(0, W)
+        
+        # Convert the 2D relative coordinates to a single index
+        indices = relative_coords[..., 0] * (W+1) + relative_coords[..., 1]
+    
+        # Initialize the matrix with zeros
+        matrix = torch.zeros(H*W, (H+1)*(W+1), dtype=torch.int64)
+        
+        # Create a relationship label tensor
+        relationship_labels = torch.arange(1, K*K + 1).reshape(-1)
+    
+        # Fill the matrix with the relationship labels
+        for i in range(H):
+            for j in range(W):
+                row_idx = i * W + j
+                matrix[row_idx, indices[i, j].reshape(-1)] = relationship_labels
+        
+        matrix = matrix.reshape(H*W, H+1, W+1)[:, :-1, :-1].reshape(H*W, H*W)
+        return matrix
 
 
 class EMO(nn.Module):
@@ -173,16 +221,20 @@ class EMO(nn.Module):
             
             # Integrated MHSA
             for j in range(depths[i]):
-                layers.append(iRMB(embed_dims[i], dim_heads[i], exp_ratio=exp_ratios[i], 
-                                   norm_layer=norm_layers[i], act_layer=act_layers[i],
-                                   window_size=window_sizes[i], 
-                                   window_num=(img_size//window_sizes[i])**2,
-                                   qkv_bias=qkv_bias, attn_drop=attn_drop, 
-                                   drop=drop, drop_path=dpr[j], group=group,
-                                   shuffle=True if i<len(depths)-1 else False))
+                layers.append(iRMB(embed_dims[i], exp_ratio=exp_ratios[i],
+                                   window_size=window_sizes[i], dim_head=dim_heads[i],
+                                   drop=drop, drop_path=dpr[j], 
+                                   shuffle=True if i < len(depths)-1 else False))
                 
             self.__setattr__(f'stage{i + 1}', nn.ModuleList(layers))
 		    
+        """
+        self.avgpool1 = torch.nn.AdaptiveAvgPool2d((56,56))
+        self.avgpool2 = torch.nn.AdaptiveAvgPool2d((28,28))
+        self.avgpool3 = torch.nn.AdaptiveAvgPool2d((14,14))
+        self.avgpool4 = torch.nn.AdaptiveAvgPool2d((7,7))
+        """
+        
         self.norm = get_norm(norm_layers[-1])(embed_dims[-1])
         self.head = nn.Linear(embed_dims[-1], num_classes)
         self.apply(self._init_weights)
@@ -238,21 +290,37 @@ class EMO(nn.Module):
                 x = checkpoint.checkpoint(blk, x.requires_grad_())
             else:
                 x = blk(x)
+            if i == 0:
+                shortcut = x
+            else:
+                x = x * 0.9 + shortcut * 0.1
         for i, blk in enumerate(self.stage2):
             if self.training:
                 x = checkpoint.checkpoint(blk, x.requires_grad_())
             else:
                 x = blk(x)
+            if i == 0:
+                shortcut = x
+            else:
+                x = x * 0.9 + shortcut * 0.1
         for i, blk in enumerate(self.stage3):
             if self.training:
                 x = checkpoint.checkpoint(blk, x.requires_grad_())
             else:
                 x = blk(x)
+            if i == 0:
+                shortcut = x
+            else:
+                x = x * 0.9 + shortcut * 0.1
         for i, blk in enumerate(self.stage4):
             if self.training:
                 x = checkpoint.checkpoint(blk, x.requires_grad_())
             else:
                 x = blk(x)
+            if i == 0:
+                shortcut = x
+            else:
+                x = x * 0.9 + shortcut * 0.1
         return x
 
     def forward(self, x):
@@ -313,18 +381,18 @@ def EMO_6M(pretrained=False, **kwargs):
 def Shufformer_6M(pretrained=False, **kwargs):
     model = EMO(dim_in=3,
                 img_size=224,
-                depths=[3, 3, 10, 3],
+                depths=[2, 2, 9, 2],
                 dim_stem=48,
-                embed_dims=[48, 80, 160, 320],
+                embed_dims=[48, 96, 192, 384],
                 exp_ratios=[3, 3, 3, 3],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'],
                 act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
-                dim_heads=[16, 16, 16, 16],
-                window_sizes=[3, 5, 7, 7],
+                dim_heads=[16, 32, 32, 64],
+                window_sizes=[14, 14, 7, 7],
                 qkv_bias=True,
                 attn_drop=0.,
                 drop=0.,
-                drop_path=0.05,
+                drop_path=0.1,
                 group=1,
                 **kwargs)
     return model
