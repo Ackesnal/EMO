@@ -16,13 +16,15 @@ class iRMB(nn.Module):
     def __init__(self, dim_in, dim_out, norm_in=True, has_skip=True, exp_ratio=1.0, norm_layer='bn_2d',
                  act_layer='relu', v_proj=True, dw_ks=3, stride=1, dilation=1, se_ratio=0.0, dim_head=64, window_size=7,
                  attn_s=True, qkv_bias=False, attn_drop=0., drop=0., drop_path=0., v_group=False, attn_pre=False,
-                 conv_branch=False):
+                 conv_branch=False, downsample_skip=False, shuffle=False):
         super().__init__()
         self.norm = get_norm(norm_layer)(dim_in) if norm_in else nn.Identity()
         dim_mid = int(dim_in * exp_ratio)
         self.has_skip = (dim_in == dim_out and stride == 1) and has_skip
+        self.downsample_skip = (stride == 2 and dim_in != dim_out) and downsample_skip
         self.attn_s = attn_s
         self.conv_branch = conv_branch
+        self.shuffle = shuffle
         if self.attn_s:
             assert dim_in % dim_head == 0, 'dim should be divisible by num_heads'
             self.dim_head = dim_head
@@ -64,11 +66,16 @@ class iRMB(nn.Module):
         self.proj_drop = nn.Dropout(drop)
         self.proj = ConvNormAct(dim_mid, dim_out, kernel_size=1, norm_layer='none', act_layer='none', inplace=inplace)
         self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
+        
+        if self.downsample_skip:
+            self.downsample = ConvNormAct(int(dim_in*4), dim_out, kernel_size=1, bias=qkv_bias, norm_layer='none', act_layer='none')
 
     def forward(self, x):
         shortcut = x
         x = self.norm(x)
         B, C, H, W = x.shape
+        if self.shuffle:
+            x = x.reshape(B, C, 2, H//2, 2, W//2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
         if self.attn_s:
             # padding
             if self.window_size <= 0:
@@ -118,13 +125,29 @@ class iRMB(nn.Module):
             if pad_r > 0 or pad_b > 0:
                 x = x[:, :, :H, :W].contiguous()
         else:
+            if self.downsample_skip:
+                shortcut = torch.cat([x[:,:,::2,::2], x[:,:,1::2,::2], x[:,:,::2,1::2], x[:,:,1::2,1::2]], dim=1)
+                shortcut = self.downsample(shortcut)
             x = self.v(x)
         
-        
-        x = x + self.se(self.conv_local(x)) if self.has_skip else self.se(self.conv_local(x))
-        x = self.proj_drop(x)
-        x = self.proj(x)
-        x = (shortcut + self.drop_path(x)) if self.has_skip else x
+        if self.downsample_skip:
+            x = self.se(self.conv_local(x))
+            x = self.proj_drop(x)
+            x = self.proj(x)
+            x = shortcut + self.drop_path(x)
+        elif self.has_skip:
+            x = x + self.se(self.conv_local(x)) 
+            x = self.proj_drop(x)
+            x = self.proj(x)
+            if self.shuffle:
+                x = x.reshape(B, C, H//2, 2, W//2, 2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
+            x = shortcut + self.drop_path(x)
+        else:
+            x = self.se(self.conv_local(x))
+            x = self.proj_drop(x)
+            x = self.proj(x)
+            if self.shuffle:
+                x = x.reshape(B, C, H//2, 2, W//2, 2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
         return x
 
 
@@ -135,7 +158,7 @@ class EMO(nn.Module):
                  dw_kss=[3, 3, 5, 5], se_ratios=[0.0, 0.0, 0.0, 0.0], dim_heads=[32, 32, 32, 32],
                  window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True], qkv_bias=True,
                  attn_drop=0., drop=0., drop_path=0., v_group=False, attn_pre=False, pre_dim=0,
-                 conv_branchs=[False, False, False, True]):
+                 conv_branchs=[False, False, False, False], downsample_skip=False, shuffle=False):
         super().__init__()
         self.num_classes = num_classes
         assert num_classes > 0
@@ -156,15 +179,25 @@ class EMO(nn.Module):
             dpr = dprs[sum(depths[:i]):sum(depths[:i + 1])]
             for j in range(depths[i]):
                 if j == 0:
-                    stride, has_skip, attn_s, exp_ratio = 2, False, False, exp_ratios[i] * 2
+                    stride = 2
+                    has_skip = False
+                    attn_s = False
+                    exp_ratio = exp_ratios[i] * 2
+                    shuffle_type = False
                 else:
-                    stride, has_skip, attn_s, exp_ratio = 1, True, attn_ss[i], exp_ratios[i]
+                    stride = 1
+                    has_skip = True
+                    attn_s = attn_ss[i]
+                    exp_ratio = exp_ratios[i]
+                    shuffle_type = True if ((i<len(depths)-1) and (j%2==0 and shuffle)) else False
+                        
                 layers.append(iRMB(emb_dim_pre, embed_dims[i], norm_in=True, has_skip=has_skip, exp_ratio=exp_ratio,
                                    norm_layer=norm_layers[i], act_layer=act_layers[i], v_proj=True, dw_ks=dw_kss[i],
                                    stride=stride, dilation=1, se_ratio=se_ratios[i],
                                    dim_head=dim_heads[i], window_size=window_sizes[i], attn_s=attn_s,
                                    qkv_bias=qkv_bias, attn_drop=attn_drop, drop=drop, drop_path=dpr[j], v_group=v_group,
-                                   attn_pre=attn_pre, conv_branch=conv_branchs[i]))
+                                   attn_pre=attn_pre, conv_branch=conv_branchs[i], downsample_skip=downsample_skip, 
+                                   shuffle=shuffle_type))
                 emb_dim_pre = embed_dims[i]
             self.__setattr__(f'stage{i + 1}', nn.ModuleList(layers))
         
@@ -296,6 +329,39 @@ def EMO_6M(pretrained=False, **kwargs):
                 norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
                 qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
+                **kwargs)
+    return model
+    
+@MODEL.register_module
+def EMO_6M_4BranchInStage4(pretrained=False, **kwargs):
+    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
+                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
+                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
+                downsample_skip=False, conv_branchs=[False, False, False, True], shuffle=False,
+                **kwargs)
+    return model
+    
+@MODEL.register_module
+def EMO_6M_WindowShuffle(pretrained=False, **kwargs):
+    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
+                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
+                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
+                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=True, 
+                **kwargs)
+    return model
+
+@MODEL.register_module
+def EMO_6M_DownsampleSkip(pretrained=False, **kwargs):
+    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
+                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
+                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
+                downsample_skip=True, conv_branchs=[False, False, False, False], shuffle=False, 
                 **kwargs)
     return model
 

@@ -34,15 +34,14 @@ def init_training(cfg):
 	cfg.dist = True
 	cfg.world_size, cfg.rank, cfg.local_rank = 1, 0, 0
 	cfg.ngpus_per_node = torch.cuda.device_count()
-	if 'SLURM_PROCID' in os.environ:
-		cfg.world_size = int(os.environ['WORLD_SIZE'])
-		cfg.rank = int(os.environ['SLURM_PROCID'])
-		cfg.local_rank = cfg.rank % cfg.ngpus_per_node
-		cfg.nnodes = cfg.world_size // cfg.ngpus_per_node
-	elif 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+	if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
 		cfg.world_size = int(os.environ['WORLD_SIZE'])
 		cfg.rank = int(os.environ["RANK"])
 		cfg.local_rank = int(os.environ['LOCAL_RANK'])
+		cfg.nnodes = cfg.world_size // cfg.ngpus_per_node
+	elif 'SLURM_PROCID' in os.environ:
+		cfg.rank = int(os.environ['SLURM_PROCID'])
+		cfg.local_rank = cfg.rank % cfg.ngpus_per_node
 		cfg.nnodes = cfg.world_size // cfg.ngpus_per_node
 	else:
 		cfg.dist = False
@@ -51,7 +50,7 @@ def init_training(cfg):
 		torch.cuda.set_device(cfg.local_rank)
 		cfg.master = cfg.rank == cfg.logger_rank
 		cfg.dist_backend = 'nccl'
-		torch.distributed.init_process_group(backend=cfg.dist_backend, init_method=cfg.dist_url, world_size=cfg.world_size, rank=cfg.rank)
+		torch.distributed.init_process_group(backend=cfg.dist_backend, init_method=cfg.dist_url)
 		torch.distributed.barrier()
 	else:
 		cfg.master = True
