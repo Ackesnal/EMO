@@ -255,27 +255,27 @@ class EMO(nn.Module):
     def forward_features(self, x):
         for blk in self.stage0:
             if self.training:
-                x = checkpoint.checkpoint(blk, x.requires_grad_())
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         for blk in self.stage1:
             if self.training:
-                x = checkpoint.checkpoint(blk, x.requires_grad_())
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         for blk in self.stage2:
             if self.training:
-                x = checkpoint.checkpoint(blk, x.requires_grad_())
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         for blk in self.stage3:
             if self.training:
-                x = checkpoint.checkpoint(blk, x.requires_grad_())
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         for blk in self.stage4:
             if self.training:
-                x = checkpoint.checkpoint(blk, x.requires_grad_())
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         return x
