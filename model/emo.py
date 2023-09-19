@@ -21,7 +21,8 @@ class iRMB(nn.Module):
                  drop=0.0,
                  drop_path=0.0,
                  shuffle=False,
-                 layer_scale_init_value=1e-6):
+                 layer_scale_init_value=1e-6,
+                 reverse=False):
         
         super().__init__()
         
@@ -66,11 +67,10 @@ class iRMB(nn.Module):
         self.gamma_conv7 = nn.Parameter(layer_scale_init_value * torch.ones((dim_in)),
                                         requires_grad=True) if layer_scale_init_value > 0 else None
         self.gamma_attn = nn.Parameter(layer_scale_init_value * torch.ones((dim_in)), 
-                                       requires_grad=True) if layer_scale_init_value > 0 else None
-        self.gamma_proj = nn.Parameter(layer_scale_init_value * torch.ones((dim_in)), 
-                                       requires_grad=True) if layer_scale_init_value > 0 else None         
+                                       requires_grad=True) if layer_scale_init_value > 0 else None   
         
         self.shuffle = shuffle
+        self.reverse = reverse
         self.dim_head = dim_head
         self.num_head = dim_in // self.dim_head
         
@@ -132,13 +132,15 @@ class iRMB(nn.Module):
         x = self.proj1(x)
         x = self.act(x)
         x = self.proj2(x)
-        x = x * self.gamma_proj.reshape(1,-1,1,1)
         
         x = shortcut + self.drop_path(x)
         
         if self.shuffle:
             # rotate
-            x = x.reshape(B, C, 2, H//2, 2, W//2).permute(0,1,3,2,5,4).reshape(B,C,H,W)
+            if self.reverse:
+                x = x.reshape(B, C, H//2, 2, W//2, 2).permute(0,1,3,2,5,4).reshape(B,C,H,W)
+            else:
+                x = x.reshape(B, C, 2, H//2, 2, W//2).permute(0,1,3,2,5,4).reshape(B,C,H,W)    
         return x                     
         
     def generate_pos_indices(self, H, W, K):
@@ -200,9 +202,8 @@ class EMO(nn.Module):
         self.num_classes = num_classes
         assert num_classes > 0
         dprs = [x.item() for x in torch.linspace(0, drop_path, sum(depths))]
-        self.stage0 = nn.ModuleList([MSPatchEmb(dim_in, dim_stem, kernel_size=3, c_group=1,
-                                                stride=2, norm_layer="ln_2d", act_layer='gelu',
-                                                pre_norm=True)])
+        self.stage0 = nn.ModuleList([MSPatchEmb(dim_in, dim_stem, kernel_size=3, c_group=-1,
+                                                stride=2, norm_layer="ln_2d", act_layer='gelu')])
         img_size = img_size//2
                                                 
         for i in range(len(depths)):
@@ -214,9 +215,8 @@ class EMO(nn.Module):
                 dim_in = embed_dims[i-1]
             
             # Downsampling
-            layers.append(MSPatchEmb(dim_in, embed_dims[i], kernel_size=3, c_group=1,
-                                     stride=2, norm_layer="ln_2d", act_layer='gelu',
-                                     dilations=[1], pre_norm=True))
+            layers.append(MSPatchEmb(dim_in, embed_dims[i], kernel_size=3, c_group=-1,
+                                     stride=2, norm_layer="ln_2d", act_layer='gelu'))
             img_size = img_size//2
             
             # Integrated MHSA
@@ -224,17 +224,11 @@ class EMO(nn.Module):
                 layers.append(iRMB(embed_dims[i], exp_ratio=exp_ratios[i],
                                    window_size=window_sizes[i], dim_head=dim_heads[i],
                                    drop=drop, drop_path=dpr[j], 
-                                   shuffle=True if i < len(depths)-1 else False))
+                                   shuffle=True if i < len(depths)-1 and j <=depths[i]//2*2 else False,
+                                   reverse=True if j%2==1 else False))
                 
             self.__setattr__(f'stage{i + 1}', nn.ModuleList(layers))
-		    
-        """
-        self.avgpool1 = torch.nn.AdaptiveAvgPool2d((56,56))
-        self.avgpool2 = torch.nn.AdaptiveAvgPool2d((28,28))
-        self.avgpool3 = torch.nn.AdaptiveAvgPool2d((14,14))
-        self.avgpool4 = torch.nn.AdaptiveAvgPool2d((7,7))
-        """
-        
+    		
         self.norm = get_norm(norm_layers[-1])(embed_dims[-1])
         self.head = nn.Linear(embed_dims[-1], num_classes)
         self.apply(self._init_weights)
@@ -290,37 +284,21 @@ class EMO(nn.Module):
                 x = checkpoint.checkpoint(blk, x.requires_grad_())
             else:
                 x = blk(x)
-            if i == 0:
-                shortcut = x
-            else:
-                x = x * 0.9 + shortcut * 0.1
         for i, blk in enumerate(self.stage2):
             if self.training:
                 x = checkpoint.checkpoint(blk, x.requires_grad_())
             else:
                 x = blk(x)
-            if i == 0:
-                shortcut = x
-            else:
-                x = x * 0.9 + shortcut * 0.1
         for i, blk in enumerate(self.stage3):
             if self.training:
                 x = checkpoint.checkpoint(blk, x.requires_grad_())
             else:
                 x = blk(x)
-            if i == 0:
-                shortcut = x
-            else:
-                x = x * 0.9 + shortcut * 0.1
         for i, blk in enumerate(self.stage4):
             if self.training:
                 x = checkpoint.checkpoint(blk, x.requires_grad_())
             else:
                 x = blk(x)
-            if i == 0:
-                shortcut = x
-            else:
-                x = x * 0.9 + shortcut * 0.1
         return x
 
     def forward(self, x):
@@ -381,14 +359,14 @@ def EMO_6M(pretrained=False, **kwargs):
 def Shufformer_6M(pretrained=False, **kwargs):
     model = EMO(dim_in=3,
                 img_size=224,
-                depths=[2, 2, 9, 2],
+                depths=[3, 3, 11, 3],
                 dim_stem=48,
                 embed_dims=[48, 96, 192, 384],
                 exp_ratios=[3, 3, 3, 3],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'],
                 act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dim_heads=[16, 32, 32, 64],
-                window_sizes=[14, 14, 7, 7],
+                window_sizes=[14, 14, 14, 7],
                 qkv_bias=True,
                 attn_drop=0.,
                 drop=0.,

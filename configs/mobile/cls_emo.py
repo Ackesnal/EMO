@@ -34,7 +34,7 @@ model.model_kwargs = dict(pretrained=False, checkpoint_path='', ema=False, stric
 
 # =========> optimizer <=================================
 optim = _Namespace()
-optim.lr = 1.5e-3
+optim.lr = 5e-4
 optim.optim_kwargs = dict(name='adamw', betas=(0.9, 0.999), eps=1e-8, weight_decay=0.05, amsgrad=False)
 # =========> trainer <=================================
 trainer = _Namespace()
@@ -44,8 +44,8 @@ trainer.resume_dir = ''
 trainer.cuda_deterministic = False
 trainer.epoch_full = 300
 trainer.scheduler_kwargs = dict(
-	name='cosine', lr_noise=None, noise_pct=0.67, noise_std=1.0, noise_seed=42, lr_min=1e-6 / 4,
-	warmup_lr=1e-6 / 4, warmup_iters=-1, cooldown_iters=0, warmup_epochs=20, cooldown_epochs=0, use_iters=True,
+	name='cosine', lr_noise=None, noise_pct=0.67, noise_std=1.0, noise_seed=42, lr_min=1e-6,
+	warmup_lr=1e-6, warmup_iters=-1, cooldown_iters=0, warmup_epochs=5, cooldown_epochs=0, use_iters=True,
 	patience_iters=0, patience_epochs=0, decay_iters=0, decay_epochs=0, cycle_decay=0.1,)
 
 trainer.data = _Namespace()
@@ -64,7 +64,7 @@ trainer.mixup_kwargs = dict(
 
 trainer.scale_kwargs = dict(n_scale=0, base_h=size, base_w=size, min_h=160, max_h=320, min_w=160, max_w=320, check_scale_div_factor=32)
 
-trainer.start_test_epoch = 200
+trainer.start_test_epoch = 0
 trainer.every_test_epoch = 5
 trainer.find_unused_parameters = False
 trainer.sync_BN = 'none'  # [none, native, apex, timm]
