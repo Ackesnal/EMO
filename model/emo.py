@@ -171,7 +171,7 @@ class EMO(nn.Module):
              stride=1, dilation=1, se_ratio=1,
              dim_head=dim_heads[0], window_size=window_sizes[0], attn_s=False,
              qkv_bias=qkv_bias, attn_drop=attn_drop, drop=drop, drop_path=0.,
-             attn_pre=attn_pre)
+             attn_pre=attn_pre, conv_branch=False, downsample_skip=downsample_skip)
         ])
         emb_dim_pre = stem_dim
         for i in range(len(depths)):
