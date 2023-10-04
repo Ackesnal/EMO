@@ -123,9 +123,9 @@ class iRMB(nn.Module):
                     v_conv7 = self.conv7(v)
                 v = rearrange(v, 'b (heads dim_head) h w -> b heads (h w) dim_head', heads=self.num_head).contiguous()
                 x_spa = attn_spa @ v
-                if self.conv_branch:
-                    v = v_conv3 + v_conv5 + v_conv7 + v
                 x_spa = rearrange(x_spa, 'b heads (h w) dim_head -> b (heads dim_head) h w', heads=self.num_head, h=h, w=w).contiguous()
+                if self.conv_branch:
+                    x_spa = v_conv3 + v_conv5 + v_conv7 + x_spa
             
             # unpadding
             x = rearrange(x_spa, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2).contiguous()
@@ -464,7 +464,7 @@ def EMO_6M_AllSelfAttention(pretrained=False, **kwargs):
                 depths=[3, 3, 10, 6], stem_dim=24, embed_dims=[32, 64, 128, 256], exp_ratios=[3., 4., 4., 5.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.1, v_group=False, attn_pre=False, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, 
                 **kwargs)
     return model
@@ -476,7 +476,7 @@ def EMO_6M_AllSelfAttention_4BranchInStage4(pretrained=False, **kwargs):
                 depths=[3, 3, 10, 6], stem_dim=24, embed_dims=[32, 64, 128, 256], exp_ratios=[3., 4., 4., 5.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.1, v_group=False, attn_pre=False, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, False, False, True], shuffle=False, conv_local=False, 
                 **kwargs)
     return model
@@ -488,7 +488,7 @@ def EMO_6M_AllSelfAttention_4BranchInStage34(pretrained=False, **kwargs):
                 depths=[3, 3, 10, 6], stem_dim=24, embed_dims=[32, 64, 128, 256], exp_ratios=[3., 4., 4., 5.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.1, v_group=False, attn_pre=False, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, False, True, True], shuffle=False, conv_local=False, 
                 **kwargs)
     return model
@@ -500,7 +500,7 @@ def EMO_6M_AllSelfAttention_4BranchInStage234(pretrained=False, **kwargs):
                 depths=[3, 3, 10, 6], stem_dim=24, embed_dims=[32, 64, 128, 256], exp_ratios=[3., 4., 4., 5.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.1, v_group=False, attn_pre=False, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, True, True, True], shuffle=False, conv_local=False, 
                 **kwargs)
     return model
@@ -512,7 +512,7 @@ def EMO_6M_AllSelfAttention_4BranchInStage1234(pretrained=False, **kwargs):
                 depths=[3, 3, 10, 6], stem_dim=24, embed_dims=[32, 64, 128, 256], exp_ratios=[3., 4., 4., 5.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.1, v_group=False, attn_pre=False, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[True, True, True, True], shuffle=False, conv_local=False, 
                 **kwargs)
     return model
