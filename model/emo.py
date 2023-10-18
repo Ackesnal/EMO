@@ -64,7 +64,7 @@ class iRMB(nn.Module):
                 self.v = nn.Identity()        
          
         if conv_local:  
-            self.conv_local = ConvNormAct(dim_mid, dim_mid, kernel_size=dw_ks, stride=stride, dilation=dilation, groups=dim_mid, norm_layer='bn_2d', act_layer='silu', inplace=inplace)
+            self.conv_local = ConvNormAct(dim_mid, dim_mid, kernel_size=dw_ks, stride=stride, dilation=dilation, groups=dim_mid, norm_layer='ln_2d', act_layer='gelu', inplace=inplace)
             self.se = SE(dim_mid, rd_ratio=se_ratio, act_layer=get_act(act_layer)) if se_ratio > 0.0 else nn.Identity()
         else:
             self.conv_local = nn.Identity()
@@ -302,6 +302,8 @@ class EMO(nn.Module):
         x = self.head(x)
         return {'out': x, 'out_kd': x}
 
+
+        
 
 @MODEL.register_module
 def EMO_1M(pretrained=False, **kwargs):
@@ -551,6 +553,18 @@ def EMO_6M_AllSelfAttention_4BranchInStage123(pretrained=False, **kwargs):
                 qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[True, True, True, False], shuffle=False, conv_local=False, 
                 **kwargs)
+    return model
+    
+    
+@MODEL.register_module
+def EMO_6M_AllSelfAttention_7x7Kernel_test(pretrained=False, **kwargs):
+    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
+                depths=[3, 3, 10, 3], stem_dim=24, embed_dims=[48, 64, 128, 256], exp_ratios=[3., 4., 4., 4.],
+                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
+                dw_kss=[7, 7, 7, 7], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
+                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=True, 
+                **kwargs) 
     return model
     
 
