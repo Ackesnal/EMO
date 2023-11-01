@@ -74,12 +74,15 @@ trainer.ema = 0.9998  # [ None, 0.9998 ]
 
 # =========> loss <=================================
 tea_model = _Namespace()
-tea_model.name = 'tresnet_l_v2'
-tea_model.model_kwargs = dict(pretrained=False, checkpoint_path='pretrained/tresnet_l_v2_83_9.pth', ema=False, strict=True, num_classes=data.nb_classes)
+tea_model.name = 'regnety_160'
+tea_model.model_kwargs = dict(pretrained=True, checkpoint_path='', ema=False, strict=True, num_classes=data.nb_classes)
 
 loss = _Namespace()
+#loss.loss_terms = [
+#	dict(type='SoftTargetCE', name='CE', lam=1.0, fp32=True) if trainer.mixup_kwargs['prob'] > 0 else dict(type='LabelSmoothingCE'#, name='CE', lam=1.0, smoothing=trainer.mixup_kwargs['label_smoothing']),
+#]
 loss.loss_terms = [
-	dict(type='SoftTargetCE', name='CE', lam=1.0, fp32=True) if trainer.mixup_kwargs['prob'] > 0 else dict(type='LabelSmoothingCE', name='CE', lam=1.0, smoothing=trainer.mixup_kwargs['label_smoothing']),
+	dict(type='CLSKDLoss', name='CLSKDLoss', cfg=tea_model),
 ]
 loss.clip_grad = 5.0
 loss.create_graph = False
