@@ -626,7 +626,43 @@ def EMO_6M_AllSelfAttention_7x7Kernel_test(pretrained=False, **kwargs):
     
     
 @MODEL.register_module
-def EMO_6M_SelfAttentionInStage234_4BranchInStage1234_PostActivation_PostAttn(pretrained=False, **kwargs):
+def EMO_6M_SelfAttentionInStage234_4BranchInStage234_PostActivation_PostAttn(pretrained=False, **kwargs):
+    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
+                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
+                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
+                downsample_skip=False, conv_branchs=[False, True, True, True], shuffle=False, conv_local=False, # True, True, True, True
+                **kwargs) 
+    return model
+    
+
+@MODEL.register_module
+def EMO_6M_SelfAttentionInStage234_4BranchInStage34_PostActivation_PostAttn(pretrained=False, **kwargs):
+    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
+                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
+                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
+                downsample_skip=False, conv_branchs=[False, False, True, True], shuffle=False, conv_local=False, # True, True, True, True
+                **kwargs) 
+    return model
+    
+    
+@MODEL.register_module
+def EMO_6M_SelfAttentionInStage234_4BranchInStage4_PostActivation_PostAttn(pretrained=False, **kwargs):
+    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
+                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
+                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
+                downsample_skip=False, conv_branchs=[False, False, False, True], shuffle=False, conv_local=False, # True, True, True, True
+                **kwargs) 
+    return model
+
+    
+@MODEL.register_module
+def EMO_6M_SelfAttentionInStage234_PostActivation_PostAttn(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
                 depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
