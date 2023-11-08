@@ -162,7 +162,7 @@ class iRMB(nn.Module):
                         x_conv7 * self.conv7_weight + \
                         x # b, c, h, w
                 else:
-                    x = x_spa + x # b, c, h, w
+                    x = x_spa + x if self.has_skip else x_spa # b, c, h, w
                 
                 # Calculate Value (V)
                 x = self.v(x) # b, c_mid, h, w
@@ -199,7 +199,7 @@ class iRMB(nn.Module):
                         x_conv7 * self.conv7_weight + \
                         x # b, c_mid, h, w
                 else:
-                    x = x + x_spa # b, c_mid, h, w
+                    x = x + x_spa if self.has_skip else x_spa # b, c_mid, h, w
 
             # Convert x to original x
             x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2).contiguous()
