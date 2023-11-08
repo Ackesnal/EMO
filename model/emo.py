@@ -21,7 +21,7 @@ class iRMB(nn.Module):
         super().__init__()
         self.norm = get_norm(norm_layer)(dim_in) if norm_in else nn.Identity()
         dim_mid = int(dim_in * exp_ratio)
-        self.has_skip = (dim_in == dim_out and stride == 1) and has_skip
+        self.has_skip = has_skip
         self.attn_s = attn_s
         self.conv_branch = conv_branch
         self.shuffle = shuffle
@@ -326,27 +326,27 @@ class EMO(nn.Module):
     def forward_features(self, x):
         for blk in self.stage0:
             if self.training:
-                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+                x = blk(x)#checkpoint.checkpoint(blk, x)#, use_reentrant=False)
             else:
                 x = blk(x)
         for blk in self.stage1:
             if self.training:
-                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+                x = blk(x)#checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
         for blk in self.stage2:
             if self.training:
-                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+                x = blk(x)#checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
         for blk in self.stage3:
             if self.training:
-                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+                x = blk(x)#checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
         for blk in self.stage4:
             if self.training:
-                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+                x = blk(x)#checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
         return x
@@ -632,7 +632,7 @@ def EMO_6M_SelfAttentionInStage234_4BranchInStage1234_PostActivation_PostAttn(pr
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
                 qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=True, # True, True, True, True
+                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, # True, True, True, True
                 **kwargs) 
     return model
 

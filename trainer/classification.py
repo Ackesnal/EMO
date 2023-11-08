@@ -319,8 +319,7 @@ class CLS():
 		speed = batchsize * ntest / elapse
 
 		return speed
-   
-   
+      
 	def run(self):
 		log_msg(self.logger, f'==> Starting {self.cfg.mode}ing with {self.cfg.nnodes} nodes x {self.cfg.ngpus_per_node} GPUs')
 		if self.cfg.mode in ['train', 'ft']:
