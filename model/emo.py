@@ -22,7 +22,6 @@ class iRMB(nn.Module):
         self.norm = get_norm(norm_layer)(dim_in) if norm_in else nn.Identity()
         dim_mid = int(dim_in * exp_ratio)
         self.has_skip = (dim_in == dim_out and stride == 1) and has_skip
-        self.downsample_skip = (stride == 2 and dim_in != dim_out) and downsample_skip
         self.attn_s = attn_s
         self.conv_branch = conv_branch
         self.shuffle = shuffle
@@ -32,17 +31,20 @@ class iRMB(nn.Module):
             self.window_size = window_size
             self.num_head = dim_in // dim_head
             self.attn_pre = attn_pre
-            self.qk = nn.Linear(dim_in, 
-                                dim_in*2, 
+            self.qk = nn.Conv2d(in_channels=dim_in, 
+                                out_channels=dim_in*2, 
+                                kernel_size=1,
+                                stride=1,
+                                padding="same",
                                 bias=qkv_bias)
-            self.v = nn.Conv2d(dim_in, 
-                               dim_mid, 
+            self.v = nn.Conv2d(in_channels=dim_in, 
+                               out_channels=dim_mid, 
                                kernel_size=1,
                                stride=1,
                                padding="same",
                                bias=qkv_bias)
                                
-            self.attn_drop = nn.Dropout(attn_drop)
+            #self.attn_drop = nn.Dropout(attn_drop)
             self.drop = attn_drop
             
             if self.conv_branch:
@@ -84,15 +86,15 @@ class iRMB(nn.Module):
             else:
                 self.v = nn.Identity()        
          
-        if conv_local:  
+        if conv_local or stride > 1:  
             self.conv_local = ConvNormAct(dim_mid, 
                                           dim_mid, 
                                           kernel_size=dw_ks, 
                                           stride=stride, 
                                           dilation=dilation, 
                                           groups=dim_mid, 
-                                          norm_layer='ln_2d', 
-                                          act_layer='gelu', 
+                                          norm_layer='none', 
+                                          act_layer='none', 
                                           inplace=inplace)
             self.se = SE(dim_mid, rd_ratio=se_ratio, act_layer=get_act(act_layer)) if se_ratio > 0.0 else nn.Identity()
         else:
@@ -134,9 +136,9 @@ class iRMB(nn.Module):
             b, c, h, w = x.shape
             
             # Calculate Query (Q) and Key (K)
-            qk = self.qk(x.permute(0,2,3,1)) # b, h, w, 2c
-            qk = qk.reshape(b, h*w, 2, self.num_head, c//self.num_head).permute(2, 0, 3, 1, 4) # 2, b, nh, h*w, c//nh
-            q, k = qk[0].contiguous(), qk[1].contiguous() # b, nh, h*w, c//nh
+            qk = self.qk(x) # b, 2c, h, w
+            qk = qk.reshape(b, 2, self.num_head, c//self.num_head, h*w).permute(1, 0, 2, 4, 3).contiguous() # 2, b, nh, h*w, c//nh
+            q, k = qk[0], qk[1] # b, nh, h*w, c//nh
             
             # Case 1: Fuse tokens BEFORE the Value (V) projection (dimension expansion)
             if self.attn_pre:
@@ -145,7 +147,7 @@ class iRMB(nn.Module):
                                                        key = k,
                                                        value = x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(-1, -2).contiguous(),
                                                        dropout_p = self.drop) # b, nh, h*w, c//nh
-                x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w).contiguous() # b, c, h, w
+                x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
                 
                 if self.conv_branch:
                     # Depth-wise convolutions
@@ -182,7 +184,7 @@ class iRMB(nn.Module):
                                                        key = k,
                                                        value = x.reshape(b, self.num_head, c_mid//self.num_head, h*w).transpose(-1, -2).contiguous(),
                                                        dropout_p = self.drop) # b, nh, h*w, c_mid//nh
-                x_spa = x_spa.transpose(-1,-2).reshape(b, c_mid, h, w).contiguous() # b, c_mid, h, w
+                x_spa = x_spa.transpose(-1,-2).reshape(b, c_mid, h, w) # b, c_mid, h, w
                 
                 if self.conv_branch:
                     # Depth-wise convolutions
@@ -213,7 +215,7 @@ class iRMB(nn.Module):
         
         # Reduce dimension
         x = self.proj_drop(x)
-        x = self.proj(x) 
+        x = self.proj(x)
         x = shortcut + self.drop_path(x) if self.has_skip else self.drop_path(x)
         self.act(x) # post_activation
         
@@ -238,9 +240,6 @@ class EMO(nn.Module):
         assert num_classes > 0
         dprs = [x.item() for x in torch.linspace(0, drop_path, sum(depths))]
         self.stage0 = nn.ModuleList([MSPatchEmb(dim_in, stem_dim, kernel_size=dw_kss[0], 
-                                                c_group=1, stride=2, dilations=[1, 2, 3],
-                                                norm_layer=norm_layers[0], act_layer='none'),
-                                     MSPatchEmb(stem_dim, stem_dim, kernel_size=dw_kss[0], 
                                                 c_group=1, stride=2, dilations=[1, 2, 3],
                                                 norm_layer=norm_layers[0], act_layer='none')])
         emb_dim_pre = stem_dim
@@ -627,13 +626,13 @@ def EMO_6M_AllSelfAttention_7x7Kernel_test(pretrained=False, **kwargs):
     
     
 @MODEL.register_module
-def EMO_6M_AllSelfAttention_4BranchInStage1234_PostActivation_PostAttn(pretrained=False, **kwargs):
+def EMO_6M_SelfAttentionInStage234_4BranchInStage1234_PostActivation_PostAttn(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 12, 3], stem_dim=24, embed_dims=[48, 64, 128, 256], exp_ratios=[4., 4., 4., 4.],
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
-                dw_kss=[7, 7, 7, 7], dim_heads=[16, 16, 32, 32], window_sizes=[14, 14, 7, 7], attn_ss=[True, True, True, True],
+                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
                 qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, # True, True, True, True
+                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=True, # True, True, True, True
                 **kwargs) 
     return model
 
