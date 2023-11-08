@@ -8,6 +8,7 @@ from model import MODEL
 
 import torch.utils.checkpoint as checkpoint
 import torch.nn.functional as F
+import torch.nn as nn
 
 inplace = True
 
@@ -30,52 +31,83 @@ class iRMB(nn.Module):
             self.dim_head = dim_head
             self.window_size = window_size
             self.num_head = dim_in // dim_head
-            self.scale = self.dim_head ** -0.5
             self.attn_pre = attn_pre
-            self.qk = ConvNormAct(dim_in, int(dim_in * 2), kernel_size=1, bias=qkv_bias, norm_layer='none', act_layer='none')
-            self.v = ConvNormAct(dim_in, dim_mid, kernel_size=1, groups=self.num_head if v_group else 1, bias=qkv_bias, norm_layer='none', act_layer=act_layer, inplace=inplace)
+            self.qk = nn.Linear(dim_in, 
+                                dim_in*2, 
+                                bias=qkv_bias)
+            self.v = nn.Conv2d(dim_in, 
+                               dim_mid, 
+                               kernel_size=1,
+                               stride=1,
+                               padding="same",
+                               bias=qkv_bias)
+                               
             self.attn_drop = nn.Dropout(attn_drop)
+            self.drop = attn_drop
+            
             if self.conv_branch:
-                self.conv3 = ConvNormAct(dim_in if attn_pre else dim_mid, 
-                                         dim_in if attn_pre else dim_mid, 
-                                         kernel_size=3, 
-                                         groups=dim_in if attn_pre else dim_mid,
-                                         bias=qkv_bias, 
-                                         norm_layer='none', act_layer='none')
-                # self.conv3_se = nn.Parameter(torch.rand(()))
-                self.conv5 = ConvNormAct(dim_in if attn_pre else dim_mid, 
-                                         dim_in if attn_pre else dim_mid, 
-                                         kernel_size=5, 
-                                         groups=dim_in if attn_pre else dim_mid,
-                                         bias=qkv_bias, 
-                                         norm_layer='none', act_layer='none')
-                self.conv7 = ConvNormAct(dim_in if attn_pre else dim_mid, 
-                                         dim_in if attn_pre else dim_mid, 
-                                         kernel_size=7, 
-                                         groups=dim_in if attn_pre else dim_mid,
-                                         bias=qkv_bias, 
-                                         norm_layer='none', act_layer='none')
-                # self.beta = 
-                # self.gamma = 
+                dim = dim_in if attn_pre else dim_mid
+                self.attn_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                
+                self.conv3 = nn.Conv2d(in_channels=dim, 
+                                       out_channels=dim,
+                                       kernel_size=3,
+                                       stride=1,
+                                       padding="same",
+                                       groups=dim)
+                self.conv3_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                
+                self.conv5 = nn.Conv2d(in_channels=dim, 
+                                       out_channels=dim, 
+                                       kernel_size=5,
+                                       stride=1,
+                                       padding="same",
+                                       groups=dim)
+                self.conv5_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                
+                self.conv7 = nn.Conv2d(in_channels=dim, 
+                                       out_channels=dim, 
+                                       kernel_size=7,
+                                       stride=1,
+                                       padding="same",
+                                       groups=dim)
+                self.conv7_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                
         else:
             if v_proj:
-                self.v = ConvNormAct(dim_in, dim_mid, kernel_size=1, bias=qkv_bias, norm_layer='none', act_layer=act_layer, inplace=inplace)
+                self.v = nn.Conv2d(in_channels=dim_in, 
+                                   out_channels=dim_mid, 
+                                   kernel_size=1,
+                                   stride=1,
+                                   padding="same",
+                                   bias=qkv_bias)
             else:
                 self.v = nn.Identity()        
          
         if conv_local:  
-            self.conv_local = ConvNormAct(dim_mid, dim_mid, kernel_size=dw_ks, stride=stride, dilation=dilation, groups=dim_mid, norm_layer='ln_2d', act_layer='gelu', inplace=inplace)
+            self.conv_local = ConvNormAct(dim_mid, 
+                                          dim_mid, 
+                                          kernel_size=dw_ks, 
+                                          stride=stride, 
+                                          dilation=dilation, 
+                                          groups=dim_mid, 
+                                          norm_layer='ln_2d', 
+                                          act_layer='gelu', 
+                                          inplace=inplace)
             self.se = SE(dim_mid, rd_ratio=se_ratio, act_layer=get_act(act_layer)) if se_ratio > 0.0 else nn.Identity()
         else:
             self.conv_local = nn.Identity()
             self.se = nn.Identity()
             
         self.proj_drop = nn.Dropout(drop)
-        self.proj = ConvNormAct(dim_mid, dim_out, kernel_size=1, norm_layer='none', act_layer='none', inplace=inplace)
+        self.proj = nn.Conv2d(in_channels=dim_mid, 
+                              out_channels=dim_out, 
+                              kernel_size=1,
+                              stride=1,
+                              padding="same",
+                              bias=qkv_bias)
         self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
-        
-        if self.downsample_skip:
-            self.downsample = ConvNormAct(int(dim_in*4), dim_out, kernel_size=1, bias=qkv_bias, norm_layer='none', act_layer='none')
+        self.act = get_act(act_layer)
 
     def forward(self, x):
         shortcut = x
@@ -83,8 +115,10 @@ class iRMB(nn.Module):
         B, C, H, W = x.shape
         if self.shuffle:
             x = x.reshape(B, C, 2, H//2, 2, W//2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
+        
+        # Case 1: Normal layer
         if self.attn_s:
-            # padding
+            # Convert x to window-based x
             if self.window_size <= 0:
                 window_size_W, window_size_H = W, H
             else:
@@ -96,71 +130,97 @@ class iRMB(nn.Module):
             n1, n2 = (H + pad_b) // window_size_H, (W + pad_r) // window_size_W
             x = rearrange(x, 'b c (h1 n1) (w1 n2) -> (b n1 n2) c h1 w1', n1=n1, n2=n2).contiguous()
             
-            # attention
+            # Window-based x shape
             b, c, h, w = x.shape
-            qk = self.qk(x)
-            qk = rearrange(qk, 'b (qk heads dim_head) h w -> qk b heads (h w) dim_head', qk=2, heads=self.num_head, dim_head=self.dim_head).contiguous()
-            q, k = qk[0], qk[1]
-            attn_spa = (q @ k.transpose(-2, -1)) * self.scale
-            attn_spa = attn_spa.softmax(dim=-1)
-            attn_spa = self.attn_drop(attn_spa)
-            if self.attn_pre:
-                if self.conv_branch:
-                    x_conv3 = self.conv3(x)
-                    x_conv5 = self.conv5(x)
-                    x_conv7 = self.conv7(x)
-                x = rearrange(x, 'b (heads dim_head) h w -> b heads (h w) dim_head', heads=self.num_head).contiguous()
-                x_spa = attn_spa @ x
-                x_spa = rearrange(x_spa, 'b heads (h w) dim_head -> b (heads dim_head) h w', heads=self.num_head, h=h, w=w).contiguous()
-                if self.conv_branch:
-                    x_spa = x_conv3 + x_conv5 + x_conv7 + x_spa
-                x_spa = self.v(x_spa)
-            else:
-                v = self.v(x)
-                if self.conv_branch:
-                    v_conv3 = self.conv3(v)
-                    v_conv5 = self.conv5(v)
-                    v_conv7 = self.conv7(v)
-                v = rearrange(v, 'b (heads dim_head) h w -> b heads (h w) dim_head', heads=self.num_head).contiguous()
-                x_spa = attn_spa @ v
-                x_spa = rearrange(x_spa, 'b heads (h w) dim_head -> b (heads dim_head) h w', heads=self.num_head, h=h, w=w).contiguous()
-                if self.conv_branch:
-                    x_spa = v_conv3 + v_conv5 + v_conv7 + x_spa
             
-            # unpadding
-            x = rearrange(x_spa, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2).contiguous()
+            # Calculate Query (Q) and Key (K)
+            qk = self.qk(x.permute(0,2,3,1)) # b, h, w, 2c
+            qk = qk.reshape(b, h*w, 2, self.num_head, c//self.num_head).permute(2, 0, 3, 1, 4) # 2, b, nh, h*w, c//nh
+            q, k = qk[0].contiguous(), qk[1].contiguous() # b, nh, h*w, c//nh
+            
+            # Case 1: Fuse tokens BEFORE the Value (V) projection (dimension expansion)
+            if self.attn_pre:
+                # Self-attention
+                x_spa = F.scaled_dot_product_attention(query = q,
+                                                       key = k,
+                                                       value = x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(-1, -2).contiguous(),
+                                                       dropout_p = self.drop) # b, nh, h*w, c//nh
+                x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w).contiguous() # b, c, h, w
+                
+                if self.conv_branch:
+                    # Depth-wise convolutions
+                    x_conv3 = self.conv3(x).contiguous() # b, c, h, w
+                    x_conv5 = self.conv5(x).contiguous() # b, c, h, w
+                    x_conv7 = self.conv7(x).contiguous() # b, c, h, w
+                    
+                    # Fuse the outputs, with shortcut
+                    x = x_spa * self.attn_weight + \
+                        x_conv3 * self.conv3_weight + \
+                        x_conv5 * self.conv5_weight + \
+                        x_conv7 * self.conv7_weight + \
+                        x # b, c, h, w
+                else:
+                    x = x_spa + x # b, c, h, w
+                
+                # Calculate Value (V)
+                x = self.v(x) # b, c_mid, h, w
+                
+                # Calculate local convolution
+                if self.conv_local is not nn.Identity():
+                    x = x + self.se(self.conv_local(x)) if self.has_skip else self.se(self.conv_local(x)) # b, c_mid, h, w
+            
+            # Case 2: Fuse tokens AFTER the Value (V) projection (dimension expansion)    
+            else:
+                # Calculate Value (V)
+                x = self.v(x) # b, c_mid, h, w
+                
+                # new x shape
+                c_mid = x.shape[1]
+                
+                # Self-attention
+                x_spa = F.scaled_dot_product_attention(query = q,
+                                                       key = k,
+                                                       value = x.reshape(b, self.num_head, c_mid//self.num_head, h*w).transpose(-1, -2).contiguous(),
+                                                       dropout_p = self.drop) # b, nh, h*w, c_mid//nh
+                x_spa = x_spa.transpose(-1,-2).reshape(b, c_mid, h, w).contiguous() # b, c_mid, h, w
+                
+                if self.conv_branch:
+                    # Depth-wise convolutions
+                    x_conv3 = self.conv3(x).contiguous() # b, c_mid, h, w
+                    x_conv5 = self.conv5(x).contiguous() # b, c_mid, h, w
+                    x_conv7 = self.conv7(x).contiguous() # b, c_mid, h, w
+                    
+                    # Fuse the outputs, with shortcut
+                    x = x_spa * self.attn_weight + \
+                        x_conv3 * self.conv3_weight + \
+                        x_conv5 * self.conv5_weight + \
+                        x_conv7 * self.conv7_weight + \
+                        x # b, c_mid, h, w
+                else:
+                    x = x + x_spa # b, c_mid, h, w
+
+            # Convert x to original x
+            x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2).contiguous()
             if pad_r > 0 or pad_b > 0:
                 x = x[:, :, :H, :W].contiguous()
+                
+        # Case 2: Downsampling layer
         else:
-            if self.downsample_skip:
-                shortcut = torch.cat([x[:,:,::2,::2], x[:,:,1::2,::2], x[:,:,::2,1::2], x[:,:,1::2,1::2]], dim=1)
-                shortcut = self.downsample(shortcut)
             x = self.v(x)
+            # Calculate local convolution
+            if self.conv_local is not nn.Identity():
+                x = x + self.se(self.conv_local(x)) if self.has_skip else self.se(self.conv_local(x)) # b, c_mid, h, w
         
-        if self.downsample_skip:
-            x = self.se(self.conv_local(x))
-            x = self.proj_drop(x)
-            x = self.proj(x)
-            x = shortcut + self.drop_path(x)
-        elif self.has_skip:
-            if self.conv_local is nn.Identity():
-                x = x
-            else:
-                x = x + self.se(self.conv_local(x)) 
-            x = self.proj_drop(x)
-            x = self.proj(x)
-            if self.shuffle:
-                x = x.reshape(B, C, H//2, 2, W//2, 2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
-            x = shortcut + self.drop_path(x)
-        else:
-            if self.conv_local is nn.Identity():
-                x = x
-            else:
-                x = self.se(self.conv_local(x)) 
-            x = self.proj_drop(x)
-            x = self.proj(x)
-            if self.shuffle:
-                x = x.reshape(B, C, H//2, 2, W//2, 2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
+        # Reduce dimension
+        x = self.proj_drop(x)
+        x = self.proj(x) 
+        x = shortcut + self.drop_path(x) if self.has_skip else self.drop_path(x)
+        self.act(x) # post_activation
+        
+        # Shuffle back
+        if self.shuffle:
+            x = x.reshape(B, C, H//2, 2, W//2, 2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
+            
         return x
 
 
@@ -178,15 +238,11 @@ class EMO(nn.Module):
         assert num_classes > 0
         dprs = [x.item() for x in torch.linspace(0, drop_path, sum(depths))]
         self.stage0 = nn.ModuleList([MSPatchEmb(dim_in, stem_dim, kernel_size=dw_kss[0], 
-                                                c_group=1, stride=2, dilations=[1],
+                                                c_group=1, stride=2, dilations=[1, 2, 3],
                                                 norm_layer=norm_layers[0], act_layer='none'),
-        iRMB(stem_dim, stem_dim, norm_in=False, has_skip=False, exp_ratio=1,
-             norm_layer=norm_layers[0], act_layer=act_layers[0], v_proj=False, dw_ks=dw_kss[0],
-             stride=1, dilation=1, se_ratio=1,
-             dim_head=dim_heads[0], window_size=window_sizes[0], attn_s=False,
-             qkv_bias=qkv_bias, attn_drop=attn_drop, drop=drop, drop_path=0.,
-             attn_pre=attn_pre, conv_branch=False, downsample_skip=downsample_skip)
-        ])
+                                     MSPatchEmb(stem_dim, stem_dim, kernel_size=dw_kss[0], 
+                                                c_group=1, stride=2, dilations=[1, 2, 3],
+                                                norm_layer=norm_layers[0], act_layer='none')])
         emb_dim_pre = stem_dim
         for i in range(len(depths)):
             layers = []
@@ -198,12 +254,14 @@ class EMO(nn.Module):
                     attn_s = False
                     exp_ratio = exp_ratios[i] * 2
                     shuffle_type = False
+                    conv_local_type = True
                 else:
                     stride = 1
                     has_skip = True
                     attn_s = attn_ss[i]
                     exp_ratio = exp_ratios[i]
                     shuffle_type = True if ((i<len(depths)-1) and (j%2==0 and shuffle)) else False
+                    conv_local_type = conv_local
                         
                 layers.append(iRMB(emb_dim_pre, embed_dims[i], norm_in=True, has_skip=has_skip, exp_ratio=exp_ratio,
                                    norm_layer=norm_layers[i], act_layer=act_layers[i], v_proj=True, dw_ks=dw_kss[i],
@@ -211,7 +269,7 @@ class EMO(nn.Module):
                                    dim_head=dim_heads[i], window_size=window_sizes[i], attn_s=attn_s,
                                    qkv_bias=qkv_bias, attn_drop=attn_drop, drop=drop, drop_path=dpr[j], v_group=v_group,
                                    attn_pre=attn_pre, conv_branch=conv_branchs[i], downsample_skip=downsample_skip, 
-                                   shuffle=shuffle_type, conv_local=conv_local if stride==1 else True))
+                                   shuffle=shuffle_type, conv_local=conv_local_type))
                 emb_dim_pre = embed_dims[i]
             self.__setattr__(f'stage{i + 1}', nn.ModuleList(layers))
         
@@ -567,6 +625,17 @@ def EMO_6M_AllSelfAttention_7x7Kernel_test(pretrained=False, **kwargs):
                 **kwargs) 
     return model
     
+    
+@MODEL.register_module
+def EMO_6M_AllSelfAttention_4BranchInStage1234_PostActivation_PostAttn(pretrained=False, **kwargs):
+    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
+                depths=[3, 3, 12, 3], stem_dim=24, embed_dims=[48, 64, 128, 256], exp_ratios=[4., 4., 4., 4.],
+                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
+                dw_kss=[7, 7, 7, 7], dim_heads=[16, 16, 32, 32], window_sizes=[14, 14, 7, 7], attn_ss=[True, True, True, True],
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
+                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, # True, True, True, True
+                **kwargs) 
+    return model
 
 
 if __name__ == '__main__':
