@@ -28,6 +28,17 @@ from . import TRAINER
 
 import time
 
+from torchprofile import profile_macs
+
+def get_macs(model, x=None):
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print('Number of params:', n_parameters)
+    model.eval()
+    if x is None:
+        x = torch.rand(1, 3, 224, 224).cuda()
+    macs = profile_macs(model, x)
+    print("MMACs:", macs*1e-6)
+    return macs
 
 @TRAINER.register_module
 class CLS():
@@ -50,6 +61,7 @@ class CLS():
 			self.net_E = None
 		log_msg(self.logger, f"==> Load checkpoint: {cfg.model.model_kwargs['checkpoint_path']}") if cfg.model.model_kwargs['checkpoint_path'] else None
 		print_networks([self.net], self.cfg.size, self.logger)
+		get_macs(self.net)
 		self.dist_BN = cfg.trainer.dist_BN
 		if cfg.dist and cfg.trainer.sync_BN != 'none':
 			self.dist_BN = ''
@@ -129,6 +141,10 @@ class CLS():
 			if self.cfg.loss.clip_grad is not None:
 				dispatch_clip_grad(self.net.parameters(), value=self.cfg.loss.clip_grad)
 			optim.step()
+		#for name, param in self.net.named_parameters():
+			#if param.requires_grad and ("qk.weight" in name or "v.weight" in name):
+				#print(name, param.grad.max())
+			#if param.requires_grad and "layer1.weight" in name:
 
 	def check_bn(self):
 		if hasattr(self.net, 'module'):
@@ -190,6 +206,60 @@ class CLS():
 		f.close()
 	
 	def train(self):
+		self.reset(isTrain=True, train_mode=self.train_mode)
+		self.check_bn()
+		self.train_loader.sampler.set_epoch(int(self.epoch)) if self.cfg.dist else None
+		train_length = self.cfg.data.train_size
+		train_loader = iter(self.train_loader)
+		while self.epoch < self.epoch_full and self.iter < self.iter_full:
+			self.scheduler_step(self.iter)
+			# ---------- data ----------
+			t1 = get_timepc()
+			self.iter += 1
+			train_data = next(train_loader)
+			self.set_input(train_data)
+			t2 = get_timepc()
+			update_log_term(self.log_terms.get('data_t'), t2 - t1, 1, self.master)
+			# ---------- optimization ----------
+			self.optimize_parameters()
+			t3 = get_timepc()
+			update_log_term(self.log_terms.get('optim_t'), t3 - t2, 1, self.master)
+			update_log_term(self.log_terms.get('batch_t'), t3 - t1, 1, self.master)
+			# ---------- log ----------
+			if self.master:
+				if self.iter % self.cfg.logging.train_log_per == 0:
+					msg = able(self.progress.get_msg(self.iter, self.iter_full, self.iter / train_length, self.iter_full / train_length), self.master, None)
+					log_msg(self.logger, msg)
+					if self.writer:
+						for k, v in self.log_terms.items():
+							self.writer.add_scalar(f'Train/{k}', v.val, self.iter)
+						self.writer.flush()
+			if self.iter % self.cfg.logging.train_reset_log_per == 0:
+				self.reset(isTrain=True, train_mode=self.train_mode)
+			# ---------- update train_loader ----------
+			if self.iter % train_length == 0:
+				self.epoch += 1
+				if self.cfg.dist and self.dist_BN != '':
+					distribute_bn(self.net, self.world_size, self.dist_BN)
+					distribute_bn(self.net_E, self.world_size, self.dist_BN)
+				self.optim.sync_lookahead() if hasattr(self.optim, 'sync_lookahead') else None
+				if self.epoch >= self.cfg.trainer.start_test_epoch or self.epoch % self.cfg.trainer.every_test_epoch == 0:
+					self.test()
+				else:
+					self.test_ghost()
+					self.is_best, self.is_best_ema = False, False
+				self.cfg.total_time = get_timepc() - self.cfg.task_start_time
+				total_time_str = str(datetime.timedelta(seconds=int(self.cfg.total_time)))
+				eta_time_str = str(datetime.timedelta(seconds=int(self.cfg.total_time / self.epoch * (self.epoch_full - self.epoch))))
+				log_msg(self.logger, f'==> Total time: {total_time_str}\t Eta: {eta_time_str} \tLogged in \'{self.cfg.logdir}\'')
+				self.save_checkpoint()
+				self.reset(isTrain=True, train_mode=self.train_mode)
+				self.check_bn()
+				self.train_loader.sampler.set_epoch(int(self.epoch)) if self.cfg.dist else None
+				train_loader = iter(self.train_loader)
+		self._finish()
+
+	def bilevel_train(self):
 		self.reset(isTrain=True, train_mode=self.train_mode)
 		self.check_bn()
 		self.train_loader.sampler.set_epoch(int(self.epoch)) if self.cfg.dist else None
@@ -326,6 +396,8 @@ class CLS():
 			self.train()
 		elif self.cfg.mode in ['test']:
 			self.test_net(self.net, name='net')
+		elif self.cfg.mode in ['bilevel_opt']:
+			self.bilevel_train()
 		else:
 			print('Start inference speed testing...')
 			inference_speed = self.speed_test(self.net)
