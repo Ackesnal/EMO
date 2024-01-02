@@ -21,7 +21,7 @@ model = dict(
         dw_kss=[3, 3, 5, 5], dim_heads=[24, 24, 32, 32], window_sizes=[10, 10, 10, 10], attn_ss=[False, False, True, True],
         qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False,
         attn_pre=True, pre_dim=0, sync_bn=True, out_indices=(3, 4),
-        pretrained='../EMO/resources/EMO_5M/net.pth',
+        pretrained='../../resources/EMO_5M/net.pth',
         frozen_stages=-1, norm_eval=True),
     neck=dict(
         type='SSDNeck',
