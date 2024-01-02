@@ -109,7 +109,7 @@ class iRMB(nn.Module):
                               padding="same",
                               bias=qkv_bias)
         self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
-        self.act = get_act(act_layer)
+        self.act = nn.GELU()
 
     def forward(self, x):
         shortcut = x
@@ -180,6 +180,9 @@ class iRMB(nn.Module):
                 c_mid = x.shape[1]
                 
                 # Self-attention
+                """
+                x_spa =(q @ k.transpose(-1,-2)).softmax(-1) @ x.reshape(b, self.num_head, c_mid//self.num_head, h*w).transpose(-1, -2).contiguous()
+                """
                 x_spa = F.scaled_dot_product_attention(query = q,
                                                        key = k,
                                                        value = x.reshape(b, self.num_head, c_mid//self.num_head, h*w).transpose(-1, -2).contiguous(),
@@ -214,10 +217,10 @@ class iRMB(nn.Module):
                 x = x + self.se(self.conv_local(x)) if self.has_skip else self.se(self.conv_local(x)) # b, c_mid, h, w
         
         # Reduce dimension
-        x = self.proj_drop(x)
+        x = self.act(x) # post_activation
         x = self.proj(x)
+        x = self.proj_drop(x)
         x = shortcut + self.drop_path(x) if self.has_skip else self.drop_path(x)
-        self.act(x) # post_activation
         
         # Shuffle back
         if self.shuffle:
@@ -260,7 +263,7 @@ class EMO(nn.Module):
                     attn_s = attn_ss[i]
                     exp_ratio = exp_ratios[i]
                     shuffle_type = True if ((i<len(depths)-1) and (j%2==0 and shuffle)) else False
-                    conv_local_type = conv_local
+                    conv_local_type = conv_local if attn_s is True else True
                         
                 layers.append(iRMB(emb_dim_pre, embed_dims[i], norm_in=True, has_skip=has_skip, exp_ratio=exp_ratio,
                                    norm_layer=norm_layers[i], act_layer=act_layers[i], v_proj=True, dw_ks=dw_kss[i],
@@ -628,10 +631,10 @@ def EMO_6M_AllSelfAttention_7x7Kernel_test(pretrained=False, **kwargs):
 @MODEL.register_module
 def EMO_6M_SelfAttentionInStage234_4BranchInStage234_PostActivation_PostAttn(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 4., 4., 5.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.01, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, True, True, True], shuffle=False, conv_local=False, # True, True, True, True
                 **kwargs) 
     return model
@@ -640,10 +643,10 @@ def EMO_6M_SelfAttentionInStage234_4BranchInStage234_PostActivation_PostAttn(pre
 @MODEL.register_module
 def EMO_6M_SelfAttentionInStage234_4BranchInStage34_PostActivation_PostAttn(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 4., 4., 5.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.01, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, False, True, True], shuffle=False, conv_local=False, # True, True, True, True
                 **kwargs) 
     return model
@@ -652,7 +655,7 @@ def EMO_6M_SelfAttentionInStage234_4BranchInStage34_PostActivation_PostAttn(pret
 @MODEL.register_module
 def EMO_6M_SelfAttentionInStage234_4BranchInStage4_PostActivation_PostAttn(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 4., 4., 5.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
                 qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
@@ -664,10 +667,10 @@ def EMO_6M_SelfAttentionInStage234_4BranchInStage4_PostActivation_PostAttn(pretr
 @MODEL.register_module
 def EMO_6M_SelfAttentionInStage234_PostActivation_PostAttn(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 4., 4., 5.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.01, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, # True, True, True, True
                 **kwargs) 
     return model
