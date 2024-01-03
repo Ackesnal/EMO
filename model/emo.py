@@ -367,36 +367,36 @@ class EMO(nn.Module):
 
 @MODEL.register_module
 def EMO_1M(pretrained=False, **kwargs):
-	model = EMO(
-		# dim_in=3, num_classes=1000, img_size=224,
-		depths=[2, 2, 8, 3], stem_dim=24, embed_dims=[32, 48, 80, 168], exp_ratios=[2., 2.5, 3.0, 3.5],
-		norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-		dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 20, 21], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-		qkv_bias=True, attn_drop=0., drop=0., drop_path=0.04036, v_group=False, attn_pre=True, pre_dim=0,
-		**kwargs)
-	return model
+    model = EMO(
+        # dim_in=3, num_classes=1000, img_size=224,
+        depths=[2, 2, 8, 3], stem_dim=24, embed_dims=[32, 48, 80, 168], exp_ratios=[2., 2.5, 3.0, 3.5],
+        norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
+        dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 20, 21], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
+        qkv_bias=True, attn_drop=0., drop=0., drop_path=0.04036, v_group=False, attn_pre=True, pre_dim=0,
+        **kwargs)
+    return model
 
 @MODEL.register_module
 def EMO_2M(pretrained=False, **kwargs):
-	model = EMO(
-		# dim_in=3, num_classes=1000, img_size=224,
-		depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[32, 48, 120, 200], exp_ratios=[2., 2.5, 3.0, 3.5],
-		norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-		dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 20, 20], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-		qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-		**kwargs)
-	return model
+    model = EMO(
+        # dim_in=3, num_classes=1000, img_size=224,
+        depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[32, 48, 120, 200], exp_ratios=[2., 2.5, 3.0, 3.5],
+        norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
+        dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 20, 20], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
+        qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
+        **kwargs)
+    return model
 
 @MODEL.register_module
 def EMO_5M(pretrained=False, **kwargs):
-	model = EMO(
-		# dim_in=3, num_classes=1000, img_size=224,
-		depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 288], exp_ratios=[2., 3., 4., 4.],
-		norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-		dw_kss=[3, 3, 5, 5], dim_heads=[24, 24, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-		qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-		**kwargs)
-	return model
+    model = EMO(
+        # dim_in=3, num_classes=1000, img_size=224,
+        depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 288], exp_ratios=[2., 3., 4., 4.],
+        norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
+        dw_kss=[3, 3, 5, 5], dim_heads=[24, 24, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
+        qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
+        **kwargs)
+    return model
 
 @MODEL.register_module
 def EMO_6M(pretrained=False, **kwargs):
@@ -677,63 +677,63 @@ def EMO_6M_SelfAttentionInStage234_PostActivation_PostAttn(pretrained=False, **k
 
 
 if __name__ == '__main__':
-	from fvcore.nn import FlopCountAnalysis, flop_count_table, parameter_count
-	import copy
-	import time
-	
-	
-	def get_timepc():
-		if torch.cuda.is_available():
-			torch.cuda.synchronize()
-		return time.perf_counter()
-	
-	
-	def get_net_params(net):
-		num_params = 0
-		for param in net.parameters():
-			if param.requires_grad:
-				num_params += param.numel()
-		return num_params / 1e6
+    from fvcore.nn import FlopCountAnalysis, flop_count_table, parameter_count
+    import copy
+    import time
+    
+    
+    def get_timepc():
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        return time.perf_counter()
+    
+    
+    def get_net_params(net):
+        num_params = 0
+        for param in net.parameters():
+            if param.requires_grad:
+                num_params += param.numel()
+        return num_params / 1e6
 
 
-	bs = 2
-	reso = 224
-	# reso = 256
-	x = torch.randn(bs, 3, reso, reso).cuda()
-	fn = EMO_1M().cuda()
-	# fn = EMO_2M().cuda()
-	# fn = EMO_5M().cuda()
-	# fn = EMO_6M().cuda()
+    bs = 2
+    reso = 224
+    # reso = 256
+    x = torch.randn(bs, 3, reso, reso).cuda()
+    fn = EMO_1M().cuda()
+    # fn = EMO_2M().cuda()
+    # fn = EMO_5M().cuda()
+    # fn = EMO_6M().cuda()
 
-	fn.eval()
-	y = fn(x)
-	print(y['out'])
-	
-	# fn1 = copy.deepcopy(fn)
-	# for blk in fn1.stage0:
-	# 	blk.attn_pre = False
-	# for blk in fn1.stage1:
-	# 	blk.attn_pre = False
-	# for blk in fn1.stage2:
-	# 	blk.attn_pre = False
-	# for blk in fn1.stage3:
-	# 	blk.attn_pre = False
-	# for blk in fn1.stage4:
-	# 	blk.attn_pre = False
-	# y1 = fn1(x)
-	# print(y1['out'])
-	
-	flops = FlopCountAnalysis(fn, torch.randn(1, 3, 224, 224).cuda())
-	print(flop_count_table(flops, max_depth=3))
-	flops = FlopCountAnalysis(fn, x).total() / bs / 1e9
-	params = parameter_count(fn)[''] / 1e6
-	with torch.no_grad():
-		pre_cnt, cnt = 5, 10
-		for _ in range(pre_cnt):
-			y = fn(x)
-		t_s = get_timepc()
-		for _ in range(cnt):
-			y = fn(x)
-		t_e = get_timepc()
-	print('[GFLOPs: {:>6.3f}G]\t[Params: {:>6.3f}M]\t[Speed: {:>7.3f}]\n'.format(flops, params, bs * cnt / (t_e - t_s)))
+    fn.eval()
+    y = fn(x)
+    print(y['out'])
+    
+    # fn1 = copy.deepcopy(fn)
+    # for blk in fn1.stage0:
+    #     blk.attn_pre = False
+    # for blk in fn1.stage1:
+    #     blk.attn_pre = False
+    # for blk in fn1.stage2:
+    #     blk.attn_pre = False
+    # for blk in fn1.stage3:
+    #     blk.attn_pre = False
+    # for blk in fn1.stage4:
+    #     blk.attn_pre = False
+    # y1 = fn1(x)
+    # print(y1['out'])
+    
+    flops = FlopCountAnalysis(fn, torch.randn(1, 3, 224, 224).cuda())
+    print(flop_count_table(flops, max_depth=3))
+    flops = FlopCountAnalysis(fn, x).total() / bs / 1e9
+    params = parameter_count(fn)[''] / 1e6
+    with torch.no_grad():
+        pre_cnt, cnt = 5, 10
+        for _ in range(pre_cnt):
+            y = fn(x)
+        t_s = get_timepc()
+        for _ in range(cnt):
+            y = fn(x)
+        t_e = get_timepc()
+    print('[GFLOPs: {:>6.3f}G]\t[Params: {:>6.3f}M]\t[Speed: {:>7.3f}]\n'.format(flops, params, bs * cnt / (t_e - t_s)))
 # print(flop_count_table(FlopCountAnalysis(fn, x), max_depth=3))
