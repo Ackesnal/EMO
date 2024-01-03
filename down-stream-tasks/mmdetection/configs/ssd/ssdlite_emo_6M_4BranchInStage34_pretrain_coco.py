@@ -166,7 +166,7 @@ checkpoint_config = dict(interval=5)
 custom_hooks = [
     dict(type='NumClassCheckHook'),
     dict(type='CheckInvalidLossHook', interval=50, priority='VERY_LOW'),
-    dict(type="UnfreezeBackboneEpochBasedHook", unfreeze_epoch=1)
+    dict(type="UnfreezeBackboneEpochBasedHook", unfreeze_epoch=5)
 ]
 
 # NOTE: `auto_scale_lr` is for automatically scaling LR,

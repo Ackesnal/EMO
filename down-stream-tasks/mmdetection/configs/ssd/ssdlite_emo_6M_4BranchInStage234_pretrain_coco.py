@@ -23,7 +23,7 @@ model = dict(
         downsample_skip=False, conv_branchs=[False, True, True, True], shuffle=False,
         sync_bn=True, out_indices=(3, 4),
         pretrained='./runs_emo/CLS_EMO_6M_4BranchInStage234_DefaultCLS_Full_Trained_Results/net_E.pth',
-        frozen_stages=3, norm_eval=True),
+        frozen_stages=4, norm_eval=True),
     neck=dict(
         type='SSDNeck',
         in_channels=(160, 320),
@@ -166,7 +166,7 @@ checkpoint_config = dict(interval=5)
 custom_hooks = [
     dict(type='NumClassCheckHook'),
     dict(type='CheckInvalidLossHook', interval=50, priority='VERY_LOW')
-    dict(type="UnfreezeBackboneEpochBasedHook", unfreeze_epoch=1)
+    dict(type="UnfreezeBackboneEpochBasedHook", unfreeze_epoch=5)
 ]
 
 # NOTE: `auto_scale_lr` is for automatically scaling LR,
