@@ -154,7 +154,7 @@ class iRMB(nn.Module):
             
             if self.conv_branch:
                 dim = dim_in if attn_pre else dim_mid
-                self.attn_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                # self.attn_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
                 
                 self.conv3 = nn.Conv2d(in_channels=dim, 
                                        out_channels=dim,
@@ -162,7 +162,7 @@ class iRMB(nn.Module):
                                        stride=1,
                                        padding="same",
                                        groups=dim)
-                self.conv3_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                # self.conv3_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
                 
                 self.conv5 = nn.Conv2d(in_channels=dim, 
                                        out_channels=dim, 
@@ -170,7 +170,7 @@ class iRMB(nn.Module):
                                        stride=1,
                                        padding="same",
                                        groups=dim)
-                self.conv5_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                # self.conv5_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
                 
                 self.conv7 = nn.Conv2d(in_channels=dim, 
                                        out_channels=dim, 
@@ -178,7 +178,7 @@ class iRMB(nn.Module):
                                        stride=1,
                                        padding="same",
                                        groups=dim)
-                self.conv7_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                # self.conv7_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
                 
         else:
             if v_proj:
@@ -261,11 +261,18 @@ class iRMB(nn.Module):
                     x_conv7 = self.conv7(x).contiguous() # b, c, h, w
                     
                     # Fuse the outputs, with shortcut
+                    x = x_spa + \
+                        x_conv3 + \
+                        x_conv5 + \
+                        x_conv7 + \
+                        x # b, c, h, w
+                    """
                     x = x_spa * self.attn_weight + \
                         x_conv3 * self.conv3_weight + \
                         x_conv5 * self.conv5_weight + \
                         x_conv7 * self.conv7_weight + \
                         x # b, c, h, w
+                    """
                 else:
                     x = x_spa + x if self.has_skip else x_spa # b, c, h, w
                 
@@ -301,11 +308,18 @@ class iRMB(nn.Module):
                     x_conv7 = self.conv7(x).contiguous() # b, c_mid, h, w
                     
                     # Fuse the outputs, with shortcut
+                    x = x_spa + \
+                        x_conv3 + \
+                        x_conv5 + \
+                        x_conv7 + \
+                        x # b, c_mid, h, w
+                    """
                     x = x_spa * self.attn_weight + \
                         x_conv3 * self.conv3_weight + \
                         x_conv5 * self.conv5_weight + \
                         x_conv7 * self.conv7_weight + \
                         x # b, c_mid, h, w
+                    """
                 else:
                     x = x + x_spa if self.has_skip else x_spa # b, c_mid, h, w
 

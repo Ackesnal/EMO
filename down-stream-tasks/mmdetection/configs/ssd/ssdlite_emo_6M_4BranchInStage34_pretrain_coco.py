@@ -18,12 +18,12 @@ model = dict(
         type='EMO',
         depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
         norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-        dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[10, 10, 10, 10], attn_ss=[False, False, True, True],
+        dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
         qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
         downsample_skip=False, conv_branchs=[False, False, True, True], shuffle=False,
-        sync_bn=True, out_indices=(3, 4),
+        sync_bn=False, out_indices=(3, 4),
         pretrained='./runs_emo/CLS_EMO_6M_4BranchInStage34_DefaultCLS_Full_Trained_Results/net_E.pth',
-        frozen_stages=-1, norm_eval=True),
+        frozen_stages=3, norm_eval=True),
     neck=dict(
         type='SSDNeck',
         in_channels=(160, 320),
@@ -117,7 +117,7 @@ test_pipeline = [
     
 train_dataloader = dict(
     batch_size=96, # total batch size for 1 GPU. Adjust according to #GPU
-    num_workers=10,
+    num_workers=4,
     batch_sampler=None,
     dataset=dict(
         _delete_=True,
