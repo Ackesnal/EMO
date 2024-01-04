@@ -64,7 +64,7 @@ class iRMB(nn.Module):
                 self.v = nn.Identity()        
          
         if conv_local:  
-            self.conv_local = ConvNormAct(dim_mid, dim_mid, kernel_size=dw_ks, stride=stride, dilation=dilation, groups=dim_mid, norm_layer='ln_2d', act_layer='gelu', inplace=inplace)
+            self.conv_local = ConvNormAct(dim_mid, dim_mid, kernel_size=dw_ks, stride=stride, dilation=dilation, groups=dim_mid, norm_layer='bn_2d', act_layer='silu', inplace=inplace)
             self.se = SE(dim_mid, rd_ratio=se_ratio, act_layer=get_act(act_layer)) if se_ratio > 0.0 else nn.Identity()
         else:
             self.conv_local = nn.Identity()

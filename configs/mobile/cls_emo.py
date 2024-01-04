@@ -78,12 +78,12 @@ tea_model.name = 'regnety_160'
 tea_model.model_kwargs = dict(pretrained=True, checkpoint_path='', ema=False, strict=True, num_classes=data.nb_classes)
 
 loss = _Namespace()
-#loss.loss_terms = [
-#	dict(type='SoftTargetCE', name='CE', lam=1.0, fp32=True) if trainer.mixup_kwargs['prob'] > 0 else dict(type='LabelSmoothingCE'#, name='CE', lam=1.0, smoothing=trainer.mixup_kwargs['label_smoothing']),
-#]
 loss.loss_terms = [
-	dict(type='CLSKDLoss', name='CLSKDLoss', cfg=tea_model),
+	dict(type='SoftTargetCE', name='CE', lam=1.0, fp32=True) if trainer.mixup_kwargs['prob'] > 0 else dict(type='LabelSmoothingCE', name='CE', lam=1.0, smoothing=trainer.mixup_kwargs['label_smoothing']),
 ]
+#loss.loss_terms = [
+#	dict(type='CLSKDLoss', name='CLSKDLoss', cfg=tea_model),
+#]
 loss.clip_grad = 5.0
 loss.create_graph = False
 loss.retain_graph = False
