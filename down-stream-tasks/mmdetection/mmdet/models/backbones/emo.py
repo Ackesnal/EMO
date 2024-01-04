@@ -217,6 +217,9 @@ class iRMB(nn.Module):
         self.act = nn.GELU()
 
     def forward(self, x):
+        if self.conv_branch:
+            print(self.v.weight.requires_grad)
+        
         shortcut = x
         x = self.norm(x)
         B, C, H, W = x.shape
@@ -456,6 +459,13 @@ class EMO(nn.Module):
             m.eval()
             for param in m.parameters():
                 param.requires_grad = False
+                
+    def _unfreeze_stages(self):
+        for i in range(0, self.frozen_stages + 1):
+            m = getattr(self, f'stage{i}')
+            m.eval()
+            for param in m.parameters():
+                param.requires_grad = True
 
     def train(self, mode=True):
         """Convert the model into training mode while keep normalization layer

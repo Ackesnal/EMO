@@ -23,18 +23,7 @@ class UnfreezeBackboneEpochBasedHook(Hook):
                 model = model.module
             backbone = model.backbone
             if backbone.frozen_stages >= 0:
-                if backbone.deep_stem:
-                    backbone.stem.train()
-                    for param in backbone.stem.parameters():
-                        param.requires_grad = True
-                else:
-                    backbone.norm1.train()
-                    for m in [backbone.conv1, backbone.norm1]:
-                        for param in m.parameters():
-                            param.requires_grad = True
-
-            for i in range(1, backbone.frozen_stages + 1):
-                m = getattr(backbone, f'layer{i}')
-                m.train()
-                for param in m.parameters():
+                for param in backbone.parameters():
                     param.requires_grad = True
+                    
+        k=a
