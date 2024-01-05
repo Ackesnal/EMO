@@ -113,7 +113,7 @@ class iRMB(nn.Module):
                 x_spa = attn_spa @ x
                 x_spa = rearrange(x_spa, 'b heads (h w) dim_head -> b (heads dim_head) h w', heads=self.num_head, h=h, w=w).contiguous()
                 if self.conv_branch:
-                    x_spa = x_conv3 + x_conv5 + x_conv7 + x_spa
+                    x_spa = x_conv3 * 0.25 + x_conv5 * 0.25 + x_conv7 * 0.25 + x_spa * 0.25
                 x_spa = self.v(x_spa)
             else:
                 v = self.v(x)
@@ -125,7 +125,7 @@ class iRMB(nn.Module):
                 x_spa = attn_spa @ v
                 x_spa = rearrange(x_spa, 'b heads (h w) dim_head -> b (heads dim_head) h w', heads=self.num_head, h=h, w=w).contiguous()
                 if self.conv_branch:
-                    x_spa = v_conv3 + v_conv5 + v_conv7 + x_spa
+                    x_spa = v_conv3 * 0.25 + v_conv5 * 0.25 + v_conv7 * 0.25 + x_spa * 0.25
             
             # unpadding
             x = rearrange(x_spa, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2).contiguous()
