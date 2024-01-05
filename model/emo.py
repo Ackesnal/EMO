@@ -348,6 +348,31 @@ def EMO_6M(pretrained=False, **kwargs):
                 **kwargs)
     return model
     
+    
+@MODEL.register_module
+def EMO_5M_4BranchInStage4(pretrained=False, **kwargs):
+    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 288], exp_ratios=[2., 3., 4., 4.],
+                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
+                dw_kss=[3, 3, 5, 5], dim_heads=[24, 24, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
+                downsample_skip=False, conv_branchs=[False, False, False, True], shuffle=False,
+                **kwargs)
+    return model
+    
+
+@MODEL.register_module
+def EMO_5M_4BranchInStage34(pretrained=False, **kwargs):
+    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
+                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 288], exp_ratios=[2., 3., 4., 4.],
+                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
+                dw_kss=[3, 3, 5, 5], dim_heads=[24, 24, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
+                downsample_skip=False, conv_branchs=[False, False, True, True], shuffle=False,
+                **kwargs)
+    return model
+    
+    
 @MODEL.register_module
 def EMO_6M_4BranchInStage4(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
