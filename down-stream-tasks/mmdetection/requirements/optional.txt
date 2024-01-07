@@ -1,5 +1,4 @@
 cityscapesscripts
+fairscale
 imagecorruptions
-scipy
-sklearn
-timm
+scikit-learn
