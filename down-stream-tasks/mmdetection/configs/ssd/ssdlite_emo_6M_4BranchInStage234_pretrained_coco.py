@@ -118,7 +118,7 @@ test_pipeline = [
     
 train_dataloader = dict(
     batch_size=96, # total batch size for 1 GPU. Adjust according to #GPU
-    num_workers=10,
+    num_workers=4,
     batch_sampler=None,
     dataset=dict(
         _delete_=True,
