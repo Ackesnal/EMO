@@ -4,6 +4,8 @@ _base_ = [
     '../_base_/default_runtime.py'
 ]
 
+import os
+
 # model settings
 data_preprocessor = dict(
     type='DetDataPreprocessor',

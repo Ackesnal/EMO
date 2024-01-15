@@ -1,6 +1,13 @@
 # dataset settings
 dataset_type = 'CocoDataset'
-data_root = '/scratch/itee/uqxxu16/data/coco/'
+
+import os
+if os.path.exists('/mnt/data/coco/'):
+    data_root='/mnt/data/coco/'
+elif os.path.exists('/scratch/itee/uqxxu16/data/coco/'):
+    data_root='/mnt/data/coco/'
+else:
+    data_root = './data/coco/'
 
 # Example to use different file client
 # Method 1: simply set the data root and let the file I/O module
