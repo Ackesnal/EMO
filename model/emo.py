@@ -152,9 +152,6 @@ class iRMB(nn.Module):
             self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
 
     def forward(self, x):
-        # Input x
-        shortcut_virtual = x
-        
         # Shuffle tokens among windows when specified
         B, C, H, W = x.shape
         
@@ -177,17 +174,21 @@ class iRMB(nn.Module):
             
             # Calculate Query (Q) and Key (K)
             qkv = self.qkv(x) # b, 3c, h, w
-            qkv = qkv.reshape(b, 3, self.num_head, c//self.num_head, h*w).permute(1, 0, 2, 4, 3).contiguous() # 3, b, nh, h*w, c//nh
+            qkv = qkv.reshape(b, 3, self.num_head, c//self.num_head, h*w).permute(1, 0, 2, 4, 3) # 3, b, nh, h*w, c//nh
             q, k, v = qkv[0], qkv[1], qkv[2] # b, nh, h*w, c//nh
             
             # Add shortcut 1
             #v = v + x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(-1,-2).contiguous() # b, nh, h*w, c//nh
             
             # Self-attention
+            """
             x_spa = F.scaled_dot_product_attention(query = q,
                                                    key = k,
                                                    value = v,
                                                    dropout_p = self.drop) # b, nh, h*w, c//nh
+            x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
+            """
+            x_spa = torch.softmax(q @ k.transpose(-1,-2) * (c ** 0.5), dim=-1) @ v
             x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
             
             """    
@@ -345,30 +346,15 @@ class EMO(nn.Module):
 
     def forward_features(self, x):
         for blk in self.stage0:
-            if self.training:
-                x = blk(x) # checkpoint.checkpoint(blk, x, use_reentrant=False)
-            else:
-                x = blk(x)
+            x = blk(x)
         for blk in self.stage1:
-            if self.training:
-                x = blk(x) # checkpoint.checkpoint(blk, x, use_reentrant=False)
-            else:
-                x = blk(x)
+            x = blk(x)
         for blk in self.stage2:
-            if self.training:
-                x = blk(x) # checkpoint.checkpoint(blk, x, use_reentrant=False)
-            else:
-                x = blk(x)
+            x = blk(x)
         for blk in self.stage3:
-            if self.training:
-                x = blk(x) # checkpoint.checkpoint(blk, x, use_reentrant=False)
-            else:
-                x = blk(x)
+            x = blk(x)
         for blk in self.stage4:
-            if self.training:
-                x = blk(x) # checkpoint.checkpoint(blk, x, use_reentrant=False)
-            else:
-                x = blk(x)
+            x = blk(x)
         return x
 
     def forward(self, x):
