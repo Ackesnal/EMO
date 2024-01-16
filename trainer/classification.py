@@ -378,6 +378,7 @@ class CLS():
 		self.is_best, self.is_best_ema = False, False
 			
 	def speed_test(self, model, ntest=100, batchsize=128):
+		import time
 		x = torch.rand(batchsize, 3, 224, 224).cuda()
 		model.eval()
 

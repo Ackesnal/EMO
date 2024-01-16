@@ -53,8 +53,8 @@ class iRMB(nn.Module):
         self.attn_s = attn_s
         self.conv_branch = conv_branch
         self.shuffle = shuffle
+        self.norm = get_norm(norm_layer)(dim_in) if norm_in else nn.Identity()
         if self.attn_s:
-            self.norm = get_norm(norm_layer)(dim_in) if norm_in else nn.Identity()
             assert dim_in % dim_head == 0, 'dim should be divisible by num_heads'
             self.dim_head = dim_head
             self.window_size = window_size
@@ -68,7 +68,7 @@ class iRMB(nn.Module):
                                 bias=qkv_bias)
                                
             self.drop = attn_drop
-            self.act = nn.GELU()
+            #self.act = nn.SiLU()
             
             if self.conv_branch:
                 self.attn_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
@@ -98,7 +98,6 @@ class iRMB(nn.Module):
                 self.conv7_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
             
             # FFN with convolution
-            self.ffn_norm = get_norm("bn_2d")(dim_in) if norm_in else nn.Identity()
             self.ffn_in = nn.Conv2d(in_channels=dim_in, 
                                     out_channels=dim_in,
                                     kernel_size=1,
@@ -124,7 +123,6 @@ class iRMB(nn.Module):
                 
         else:
             # FFN with convolution
-            self.ffn_norm = get_norm("bn_2d")(dim_in) if norm_in else nn.Identity()
             self.ffn_in = nn.Conv2d(in_channels=dim_in, 
                                     out_channels=dim_in, 
                                     kernel_size=1,
@@ -219,7 +217,6 @@ class iRMB(nn.Module):
             
             # FFN
             shortcut = x
-            x = self.ffn_norm(x)
             x = self.ffn_in(x)
             x = self.conv_local(x)
             x = self.ffn_act(x)
@@ -232,12 +229,12 @@ class iRMB(nn.Module):
             if self.shuffle:
                 x = x.reshape(B, C, H//2, 2, W//2, 2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
                 
-            return x + shortcut_virtual - shortcut_virtual.detach()
+            return x
                 
         # Case 2: Downsampling layer
         else:
             # FFN
-            x = self.ffn_norm(x)
+            x = self.norm(x)
             x = self.ffn_in(x)
             x = self.conv_local(x)
             x = self.ffn_act(x)
@@ -426,9 +423,9 @@ def EMO_6M(pretrained=False, **kwargs):
 @MODEL.register_module
 def EMO_6M_AllSelfAttention(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 12, 3], stem_dim=30, embed_dims=[60, 120, 240, 480], exp_ratios=[2., 3., 3., 3.],
-                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
-                dw_kss=[5, 5, 7, 7], dim_heads=[20, 20, 40, 40], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
+                depths=[3, 3, 12, 3], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[2., 3., 3., 3.],
+                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
+                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
                 qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, 
                 **kwargs)
