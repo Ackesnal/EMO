@@ -4,122 +4,168 @@ from timm.models.layers import DropPath, trunc_normal_, create_attn
 from timm.models.efficientnet_blocks import num_groups, SqueezeExcite as SE
 from model.basic_modules import get_norm, get_act, ConvNormAct, LayerScale2D, MSPatchEmb
 
+from functools import partial
 from model import MODEL
-
+import math
 import torch.utils.checkpoint as checkpoint
 import torch.nn.functional as F
 import torch.nn as nn
 
 inplace = True
 
+class LayerNorm2d(nn.Module):
+    def __init__(self, normalized_shape, eps=1e-6, elementwise_affine=True):
+        super().__init__()
+        self.norm = nn.LayerNorm(normalized_shape, eps, elementwise_affine)
+    
+    def forward(self, x):
+        x = rearrange(x, 'b c h w -> b h w c').contiguous()
+        x = self.norm(x)
+        x = rearrange(x, 'b h w c -> b c h w').contiguous()
+        return x
+
+
+def get_norm(norm_layer='in_1d'):
+    eps = 1e-6
+    norm_dict = {
+        'none': nn.Identity,
+        'in_1d': partial(nn.InstanceNorm1d, eps=eps),
+        'in_2d': partial(nn.InstanceNorm2d, eps=eps),
+        'in_3d': partial(nn.InstanceNorm3d, eps=eps),
+        'bn_1d': partial(nn.BatchNorm1d, eps=eps),
+        'bn_2d': partial(nn.BatchNorm2d, eps=eps),
+        # 'bn_2d': partial(nn.SyncBatchNorm, eps=eps),
+        'bn_3d': partial(nn.BatchNorm3d, eps=eps),
+        'gn': partial(nn.GroupNorm, eps=eps),
+        'ln_1d': partial(nn.LayerNorm, eps=eps),
+        'ln_2d': partial(LayerNorm2d, eps=eps),
+    }
+    return norm_dict[norm_layer]
+
 
 class iRMB(nn.Module):
     def __init__(self, dim_in, dim_out, norm_in=True, has_skip=True, exp_ratio=1.0, norm_layer='bn_2d',
                  act_layer='relu', v_proj=True, dw_ks=3, stride=1, dilation=1, se_ratio=0.0, dim_head=64, window_size=7,
                  attn_s=True, qkv_bias=False, attn_drop=0., drop=0., drop_path=0., v_group=False, attn_pre=False,
-                 conv_branch=False, downsample_skip=False, shuffle=False, conv_local=True):
+                 conv_branch=False, downsample_skip=False, shuffle=False):
         super().__init__()
-        self.norm = get_norm(norm_layer)(dim_in) if norm_in else nn.Identity()
         dim_mid = int(dim_in * exp_ratio)
-        self.has_skip = has_skip
         self.attn_s = attn_s
         self.conv_branch = conv_branch
         self.shuffle = shuffle
         if self.attn_s:
+            self.norm = get_norm(norm_layer)(dim_in) if norm_in else nn.Identity()
             assert dim_in % dim_head == 0, 'dim should be divisible by num_heads'
             self.dim_head = dim_head
             self.window_size = window_size
             self.num_head = dim_in // dim_head
             self.attn_pre = attn_pre
-            self.qk = nn.Conv2d(in_channels=dim_in, 
-                                out_channels=dim_in*2, 
+            self.qkv = nn.Conv2d(in_channels=dim_in, 
+                                out_channels=dim_in*3, 
                                 kernel_size=1,
                                 stride=1,
                                 padding="same",
                                 bias=qkv_bias)
-            self.v = nn.Conv2d(in_channels=dim_in, 
-                               out_channels=dim_mid, 
-                               kernel_size=1,
-                               stride=1,
-                               padding="same",
-                               bias=qkv_bias)
                                
-            #self.attn_drop = nn.Dropout(attn_drop)
             self.drop = attn_drop
+            self.act = nn.GELU()
             
             if self.conv_branch:
-                dim = dim_in if attn_pre else dim_mid
-                self.attn_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                self.attn_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
                 
-                self.conv3 = nn.Conv2d(in_channels=dim, 
-                                       out_channels=dim,
+                self.conv3 = nn.Conv2d(in_channels=dim_in, 
+                                       out_channels=dim_in,
                                        kernel_size=3,
                                        stride=1,
                                        padding="same",
                                        groups=dim)
-                self.conv3_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                self.conv3_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
                 
-                self.conv5 = nn.Conv2d(in_channels=dim, 
-                                       out_channels=dim, 
+                self.conv5 = nn.Conv2d(in_channels=dim_in, 
+                                       out_channels=dim_in, 
                                        kernel_size=5,
                                        stride=1,
                                        padding="same",
                                        groups=dim)
-                self.conv5_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                self.conv5_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
                 
-                self.conv7 = nn.Conv2d(in_channels=dim, 
-                                       out_channels=dim, 
+                self.conv7 = nn.Conv2d(in_channels=dim_in, 
+                                       out_channels=dim_in, 
                                        kernel_size=7,
                                        stride=1,
                                        padding="same",
                                        groups=dim)
-                self.conv7_weight = nn.Parameter(torch.rand((1, dim, 1, 1)))
+                self.conv7_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
+            
+            # FFN with convolution
+            self.ffn_norm = get_norm("bn_2d")(dim_in) if norm_in else nn.Identity()
+            self.ffn_in = nn.Conv2d(in_channels=dim_in, 
+                                    out_channels=dim_in,
+                                    kernel_size=1,
+                                    stride=1,
+                                    padding="same",
+                                    groups=1)
+            self.conv_local = nn.Conv2d(in_channels=dim_in,
+                                        out_channels=dim_in,
+                                        kernel_size=dw_ks,
+                                        stride=stride,
+                                        padding="same",
+                                        dilation=dilation,
+                                        groups=dim_in)
+            self.ffn_out = nn.Conv2d(in_channels=dim_in,
+                                     out_channels=dim_out,
+                                     kernel_size=1,
+                                     stride=1,
+                                     padding="same",
+                                     groups=1)
+            self.ffn_act = nn.SiLU()
+            # Final drop path
+            self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
                 
         else:
-            if v_proj:
-                self.v = nn.Conv2d(in_channels=dim_in, 
-                                   out_channels=dim_mid, 
-                                   kernel_size=1,
-                                   stride=1,
-                                   padding="same",
-                                   bias=qkv_bias)
-            else:
-                self.v = nn.Identity()        
-         
-        if conv_local or stride > 1:  
-            self.conv_local = ConvNormAct(dim_mid, 
-                                          dim_mid, 
-                                          kernel_size=dw_ks, 
-                                          stride=stride, 
-                                          dilation=dilation, 
-                                          groups=dim_mid, 
-                                          norm_layer='none', 
-                                          act_layer='none', 
-                                          inplace=inplace)
-            self.se = SE(dim_mid, rd_ratio=se_ratio, act_layer=get_act(act_layer)) if se_ratio > 0.0 else nn.Identity()
-        else:
-            self.conv_local = nn.Identity()
-            self.se = nn.Identity()
-            
-        self.proj_drop = nn.Dropout(drop)
-        self.proj = nn.Conv2d(in_channels=dim_mid, 
-                              out_channels=dim_out, 
-                              kernel_size=1,
-                              stride=1,
-                              padding="same",
-                              bias=qkv_bias)
-        self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
-        self.act = nn.GELU()
+            # FFN with convolution
+            self.ffn_norm = get_norm("bn_2d")(dim_in) if norm_in else nn.Identity()
+            self.ffn_in = nn.Conv2d(in_channels=dim_in, 
+                                    out_channels=dim_in, 
+                                    kernel_size=1,
+                                    stride=1,
+                                    padding="same",
+                                    groups=1,
+                                    bias=qkv_bias)
+            padding=math.ceil((dw_ks-stride)/2)
+            self.conv_local = nn.Conv2d(in_channels=dim_in,
+                                        out_channels=dim_out,
+                                        kernel_size=dw_ks,
+                                        stride=stride,
+                                        dilation=dilation,
+                                        padding=padding,
+                                        groups=dim_in,
+                                        bias=qkv_bias)
+            self.ffn_out = nn.Conv2d(in_channels=dim_out,
+                                     out_channels=dim_out,
+                                     kernel_size=1,
+                                     stride=1,
+                                     padding="same",
+                                     groups=1,
+                                     bias=qkv_bias)
+            self.ffn_act = nn.SiLU()
+            # Final drop path
+            self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
 
     def forward(self, x):
-        shortcut = x
-        x = self.norm(x)
+        # Input x
+        shortcut_virtual = x
+        
+        # Shuffle tokens among windows when specified
         B, C, H, W = x.shape
         if self.shuffle:
             x = x.reshape(B, C, 2, H//2, 2, W//2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
         
-        # Case 1: Normal layer
+        # Case 1: Normal multi-branch layer
         if self.attn_s:
+            # Pre-layer normalization
+            x = self.norm(x)
+            
             # Convert x to window-based x
             if self.window_size <= 0:
                 window_size_W, window_size_H = W, H
@@ -136,97 +182,69 @@ class iRMB(nn.Module):
             b, c, h, w = x.shape
             
             # Calculate Query (Q) and Key (K)
-            qk = self.qk(x) # b, 2c, h, w
-            qk = qk.reshape(b, 2, self.num_head, c//self.num_head, h*w).permute(1, 0, 2, 4, 3).contiguous() # 2, b, nh, h*w, c//nh
-            q, k = qk[0], qk[1] # b, nh, h*w, c//nh
+            qkv = self.qkv(x) # b, 3c, h, w
+            qkv = qkv.reshape(b, 3, self.num_head, c//self.num_head, h*w).permute(1, 0, 2, 4, 3).contiguous() # 3, b, nh, h*w, c//nh
+            q, k, v = qkv[0], qkv[1], qkv[2] # b, nh, h*w, c//nh
             
-            # Case 1: Fuse tokens BEFORE the Value (V) projection (dimension expansion)
-            if self.attn_pre:
-                # Self-attention
-                x_spa = F.scaled_dot_product_attention(query = q,
-                                                       key = k,
-                                                       value = x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(-1, -2).contiguous(),
-                                                       dropout_p = self.drop) # b, nh, h*w, c//nh
-                x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
+            # Add shortcut 1
+            v = v + x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(-1,-2).contiguous() # b, nh, h*w, c//nh
+            
+            # Self-attention
+            x_spa = F.scaled_dot_product_attention(query = q,
+                                                   key = k,
+                                                   value = v,
+                                                   dropout_p = self.drop) # b, nh, h*w, c//nh
+            x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
                 
-                if self.conv_branch:
-                    # Depth-wise convolutions
-                    x_conv3 = self.conv3(x).contiguous() # b, c, h, w
-                    x_conv5 = self.conv5(x).contiguous() # b, c, h, w
-                    x_conv7 = self.conv7(x).contiguous() # b, c, h, w
+            if self.conv_branch:
+                # Depth-wise convolutions
+                x_conv3 = self.conv3(x).contiguous() # b, c_mid, h, w
+                x_conv5 = self.conv5(x).contiguous() # b, c_mid, h, w
+                x_conv7 = self.conv7(x).contiguous() # b, c_mid, h, w
                     
-                    # Fuse the outputs, with shortcut
-                    x = x_spa * self.attn_weight + \
+                # Fuse the outputs, with shortcut
+                x_spa = x_spa * self.attn_weight + \
                         x_conv3 * self.conv3_weight + \
                         x_conv5 * self.conv5_weight + \
-                        x_conv7 * self.conv7_weight + \
-                        x # b, c, h, w
-                else:
-                    x = x_spa + x if self.has_skip else x_spa # b, c, h, w
+                        x_conv7 * self.conv7_weight # b, c, h, w
                 
-                # Calculate Value (V)
-                x = self.v(x) # b, c_mid, h, w
-                
-                # Calculate local convolution
-                if self.conv_local is not nn.Identity():
-                    x = x + self.se(self.conv_local(x)) if self.has_skip else self.se(self.conv_local(x)) # b, c_mid, h, w
-            
-            # Case 2: Fuse tokens AFTER the Value (V) projection (dimension expansion)    
-            else:
-                # Calculate Value (V)
-                x = self.v(x) # b, c_mid, h, w
-                
-                # new x shape
-                c_mid = x.shape[1]
-                
-                # Self-attention
-                """
-                x_spa =(q @ k.transpose(-1,-2)).softmax(-1) @ x.reshape(b, self.num_head, c_mid//self.num_head, h*w).transpose(-1, -2).contiguous()
-                """
-                x_spa = F.scaled_dot_product_attention(query = q,
-                                                       key = k,
-                                                       value = x.reshape(b, self.num_head, c_mid//self.num_head, h*w).transpose(-1, -2).contiguous(),
-                                                       dropout_p = self.drop) # b, nh, h*w, c_mid//nh
-                x_spa = x_spa.transpose(-1,-2).reshape(b, c_mid, h, w) # b, c_mid, h, w
-                
-                if self.conv_branch:
-                    # Depth-wise convolutions
-                    x_conv3 = self.conv3(x).contiguous() # b, c_mid, h, w
-                    x_conv5 = self.conv5(x).contiguous() # b, c_mid, h, w
-                    x_conv7 = self.conv7(x).contiguous() # b, c_mid, h, w
-                    
-                    # Fuse the outputs, with shortcut
-                    x = x_spa * self.attn_weight + \
-                        x_conv3 * self.conv3_weight + \
-                        x_conv5 * self.conv5_weight + \
-                        x_conv7 * self.conv7_weight + \
-                        x # b, c_mid, h, w
-                else:
-                    x = x + x_spa if self.has_skip else x_spa # b, c_mid, h, w
+            # Add shortcut 2
+            x = x_spa + x
 
             # Convert x to original x
             x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2).contiguous()
             if pad_r > 0 or pad_b > 0:
-                x = x[:, :, :H, :W].contiguous()
+                x = x[:, :, :H, :W].contiguous() # B, C, H, W
+            
+            
+            # FFN
+            shortcut = x
+            x = self.ffn_norm(x)
+            x = self.ffn_in(x)
+            x = self.conv_local(x)
+            x = self.ffn_act(x)
+            x = self.ffn_out(x)
+            
+            # Drop path and shortcut
+            x = self.drop_path(x) + shortcut
+           
+            # Shuffle back
+            if self.shuffle:
+                x = x.reshape(B, C, H//2, 2, W//2, 2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
+                
+            return x + shortcut_virtual - shortcut_virtual.detach()
                 
         # Case 2: Downsampling layer
         else:
-            x = self.v(x)
-            # Calculate local convolution
-            if self.conv_local is not nn.Identity():
-                x = x + self.se(self.conv_local(x)) if self.has_skip else self.se(self.conv_local(x)) # b, c_mid, h, w
-        
-        # Reduce dimension
-        x = self.act(x) # post_activation
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        x = shortcut + self.drop_path(x) if self.has_skip else self.drop_path(x)
-        
-        # Shuffle back
-        if self.shuffle:
-            x = x.reshape(B, C, H//2, 2, W//2, 2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
-            
-        return x
+            # FFN
+            x = self.ffn_norm(x)
+            x = self.ffn_in(x)
+            x = self.conv_local(x)
+            x = self.ffn_act(x)
+            x = self.ffn_out(x)
+            # Drop path
+            x = self.drop_path(x)
+            return x
 
 
 class EMO(nn.Module):
@@ -252,26 +270,22 @@ class EMO(nn.Module):
             for j in range(depths[i]):
                 if j == 0:
                     stride = 2
-                    has_skip = False
                     attn_s = False
                     exp_ratio = exp_ratios[i] * 2
                     shuffle_type = False
-                    conv_local_type = True
                 else:
                     stride = 1
-                    has_skip = True
                     attn_s = attn_ss[i]
                     exp_ratio = exp_ratios[i]
                     shuffle_type = True if ((i<len(depths)-1) and (j%2==0 and shuffle)) else False
-                    conv_local_type = conv_local if attn_s is True else True
                         
-                layers.append(iRMB(emb_dim_pre, embed_dims[i], norm_in=True, has_skip=has_skip, exp_ratio=exp_ratio,
+                layers.append(iRMB(emb_dim_pre, embed_dims[i], norm_in=True, exp_ratio=exp_ratio,
                                    norm_layer=norm_layers[i], act_layer=act_layers[i], v_proj=True, dw_ks=dw_kss[i],
                                    stride=stride, dilation=1, se_ratio=se_ratios[i],
                                    dim_head=dim_heads[i], window_size=window_sizes[i], attn_s=attn_s,
                                    qkv_bias=qkv_bias, attn_drop=attn_drop, drop=drop, drop_path=dpr[j], v_group=v_group,
                                    attn_pre=attn_pre, conv_branch=conv_branchs[i], downsample_skip=downsample_skip, 
-                                   shuffle=shuffle_type, conv_local=conv_local_type))
+                                   shuffle=shuffle_type))
                 emb_dim_pre = embed_dims[i]
             self.__setattr__(f'stage{i + 1}', nn.ModuleList(layers))
         
@@ -329,27 +343,27 @@ class EMO(nn.Module):
     def forward_features(self, x):
         for blk in self.stage0:
             if self.training:
-                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+                x = blk(x) # checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         for blk in self.stage1:
             if self.training:
-                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+                x = blk(x) # checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         for blk in self.stage2:
             if self.training:
-                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+                x = blk(x) # checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         for blk in self.stage3:
             if self.training:
-                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+                x = blk(x) # checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         for blk in self.stage4:
             if self.training:
-                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
+                x = blk(x) # checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         return x
@@ -408,124 +422,13 @@ def EMO_6M(pretrained=False, **kwargs):
                 **kwargs)
     return model
     
-@MODEL.register_module
-def EMO_6M_4BranchInStage4(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
-                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, False, True], shuffle=False,
-                **kwargs)
-    return model
-    
-@MODEL.register_module
-def EMO_6M_4BranchInStage34(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
-                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, True, True], shuffle=False,
-                **kwargs)
-    return model
-    
-@MODEL.register_module
-def EMO_6M_4BranchInStage234(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
-                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, True, True, True], shuffle=False,
-                **kwargs)
-    return model
-    
-@MODEL.register_module
-def EMO_6M_4BranchInStage1234(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
-                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-                downsample_skip=False, conv_branchs=[True, True, True, True], shuffle=False,
-                **kwargs)
-    return model
-    
-@MODEL.register_module
-def EMO_6M_4BranchInStage1(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
-                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-                downsample_skip=False, conv_branchs=[True, False, False, False], shuffle=False,
-                **kwargs)
-    return model
-    
-@MODEL.register_module
-def EMO_6M_4BranchInStage12(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
-                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-                downsample_skip=False, conv_branchs=[True, True, False, False], shuffle=False,
-                **kwargs)
-    return model
-
-@MODEL.register_module
-def EMO_6M_WindowShuffle(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
-                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=True, 
-                **kwargs)
-    return model
-    
-@MODEL.register_module
-def EMO_6M_DeeperNarrower(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 12, 4], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 3., 3.],
-                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, 
-                **kwargs)
-    return model
-    
-@MODEL.register_module
-def EMO_6M_DownsampleSkip(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
-                norm_layers=['bn_2d', 'bn_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, False, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-                downsample_skip=True, conv_branchs=[False, False, False, False], shuffle=False, 
-                **kwargs)
-    return model
-    
-
-@MODEL.register_module
-def EMO_6M_AllSelfAttention_DeeperNarrower(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[2, 2, 10, 2], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 3., 4., 5.],
-                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=True, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, 
-                **kwargs)
-    return model
-    
 
 @MODEL.register_module
 def EMO_6M_AllSelfAttention(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 10, 6], stem_dim=24, embed_dims=[32, 64, 128, 256], exp_ratios=[3., 4., 4., 5.],
+                depths=[3, 3, 12, 3], stem_dim=30, embed_dims=[60, 120, 240, 480], exp_ratios=[2., 3., 3., 3.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
+                dw_kss=[5, 5, 7, 7], dim_heads=[20, 20, 40, 40], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
                 qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, 
                 **kwargs)
@@ -615,65 +518,7 @@ def EMO_6M_AllSelfAttention_4BranchInStage123(pretrained=False, **kwargs):
                 **kwargs)
     return model
     
-    
-@MODEL.register_module
-def EMO_6M_AllSelfAttention_7x7Kernel_test(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 10, 3], stem_dim=24, embed_dims=[48, 64, 128, 256], exp_ratios=[3., 4., 4., 4.],
-                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
-                dw_kss=[7, 7, 7, 7], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=True, 
-                **kwargs) 
-    return model
-    
-    
-@MODEL.register_module
-def EMO_6M_SelfAttentionInStage234_4BranchInStage234_PostActivation_PostAttn(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 4., 4., 5.],
-                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.01, v_group=False, attn_pre=False, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, True, True, True], shuffle=False, conv_local=False, # True, True, True, True
-                **kwargs) 
-    return model
-    
-
-@MODEL.register_module
-def EMO_6M_SelfAttentionInStage234_4BranchInStage34_PostActivation_PostAttn(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 4., 4., 5.],
-                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.01, v_group=False, attn_pre=False, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, True, True], shuffle=False, conv_local=False, # True, True, True, True
-                **kwargs) 
-    return model
-    
-    
-@MODEL.register_module
-def EMO_6M_SelfAttentionInStage234_4BranchInStage4_PostActivation_PostAttn(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 4., 4., 5.],
-                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, False, True], shuffle=False, conv_local=False, # True, True, True, True
-                **kwargs) 
-    return model
-
-    
-@MODEL.register_module
-def EMO_6M_SelfAttentionInStage234_PostActivation_PostAttn(pretrained=False, **kwargs):
-    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 9, 3], stem_dim=24, embed_dims=[48, 72, 160, 320], exp_ratios=[2., 4., 4., 5.],
-                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['gelu', 'gelu', 'gelu', 'gelu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 24, 20, 32], window_sizes=[14, 14, 7, 7], attn_ss=[False, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.01, v_group=False, attn_pre=False, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, # True, True, True, True
-                **kwargs) 
-    return model
+ 
 
 
 if __name__ == '__main__':

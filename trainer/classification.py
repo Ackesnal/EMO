@@ -3,7 +3,7 @@ import copy
 import datetime
 import torch
 from util.util import makedirs, log_cfg, able, log_msg, get_log_terms, update_log_term, accuracy
-from util.net import save_checkpoint, trans_state_dict, print_networks, get_timepc, reduce_tensor
+from util.net import save_checkpoint, trans_state_dict, get_timepc, reduce_tensor
 from optim.scheduler import get_scheduler
 from data import get_loader
 from model import get_model
@@ -29,6 +29,7 @@ from . import TRAINER
 import time
 
 from torchprofile import profile_macs
+from ptflops import get_model_complexity_info
 
 def get_macs(model, x=None):
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -60,8 +61,9 @@ class CLS():
 		else:
 			self.net_E = None
 		log_msg(self.logger, f"==> Load checkpoint: {cfg.model.model_kwargs['checkpoint_path']}") if cfg.model.model_kwargs['checkpoint_path'] else None
-		print_networks([self.net], self.cfg.size, self.logger)
-		get_macs(self.net)
+		macs, params = get_model_complexity_info(self.net, (3, 224, 224), print_per_layer_stat=True, as_strings=True)
+		print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+		print('{:<30}  {:<8}'.format('Number of parameters: ', params))
 		self.dist_BN = cfg.trainer.dist_BN
 		if cfg.dist and cfg.trainer.sync_BN != 'none':
 			self.dist_BN = ''
