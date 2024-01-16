@@ -157,8 +157,6 @@ class iRMB(nn.Module):
         
         # Shuffle tokens among windows when specified
         B, C, H, W = x.shape
-        if self.shuffle:
-            x = x.reshape(B, C, 2, H//2, 2, W//2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
         
         # Case 1: Normal multi-branch layer
         if self.attn_s:
@@ -166,16 +164,13 @@ class iRMB(nn.Module):
             x = self.norm(x)
             
             # Convert x to window-based x
-            if self.window_size <= 0:
-                window_size_W, window_size_H = W, H
-            else:
-                window_size_W, window_size_H = self.window_size, self.window_size
+            window_size_W, window_size_H = self.window_size, self.window_size
             pad_l, pad_t = 0, 0
             pad_r = (window_size_W - W % window_size_W) % window_size_W
             pad_b = (window_size_H - H % window_size_H) % window_size_H
             x = F.pad(x, (pad_l, pad_r, pad_t, pad_b, 0, 0,))
             n1, n2 = (H + pad_b) // window_size_H, (W + pad_r) // window_size_W
-            x = rearrange(x, 'b c (h1 n1) (w1 n2) -> (b n1 n2) c h1 w1', n1=n1, n2=n2).contiguous()
+            x = rearrange(x, 'b c (h1 n1) (w1 n2) -> (b n1 n2) c h1 w1', n1=n1, n2=n2)#.contiguous()
             
             # Window-based x shape
             b, c, h, w = x.shape
@@ -186,7 +181,7 @@ class iRMB(nn.Module):
             q, k, v = qkv[0], qkv[1], qkv[2] # b, nh, h*w, c//nh
             
             # Add shortcut 1
-            v = v + x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(-1,-2).contiguous() # b, nh, h*w, c//nh
+            #v = v + x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(-1,-2).contiguous() # b, nh, h*w, c//nh
             
             # Self-attention
             x_spa = F.scaled_dot_product_attention(query = q,
@@ -194,7 +189,8 @@ class iRMB(nn.Module):
                                                    value = v,
                                                    dropout_p = self.drop) # b, nh, h*w, c//nh
             x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
-                
+            
+            """    
             if self.conv_branch:
                 # Depth-wise convolutions
                 x_conv3 = self.conv3(x).contiguous() # b, c_mid, h, w
@@ -206,14 +202,15 @@ class iRMB(nn.Module):
                         x_conv3 * self.conv3_weight + \
                         x_conv5 * self.conv5_weight + \
                         x_conv7 * self.conv7_weight # b, c, h, w
+            """
                 
             # Add shortcut 2
-            x = x_spa + x
+            # x = x_spa + x
 
             # Convert x to original x
-            x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2).contiguous()
+            x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2)#.contiguous()
             if pad_r > 0 or pad_b > 0:
-                x = x[:, :, :H, :W].contiguous() # B, C, H, W
+                x = x[:, :, :H, :W]#.contiguous() # B, C, H, W
             
             
             # FFN
@@ -225,11 +222,7 @@ class iRMB(nn.Module):
             
             # Drop path and shortcut
             x = self.drop_path(x) + shortcut
-           
-            # Shuffle back
-            if self.shuffle:
-                x = x.reshape(B, C, H//2, 2, W//2, 2).permute(0,1,3,2,5,4).reshape(B, C, H, W)
-                
+            
             return x
                 
         # Case 2: Downsampling layer
@@ -438,7 +431,7 @@ def EMO_6M_AllSelfAttention(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
                 depths=[4, 4, 12, 4], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[2., 3., 3., 3.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, True, True, True],
+                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
                 qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, 
                 **kwargs)

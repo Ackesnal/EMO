@@ -30,6 +30,8 @@ import time
 
 from torchprofile import profile_macs
 from ptflops import get_model_complexity_info
+import torch
+from torch.autograd import profiler
 
 def get_macs(model, x=None):
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -56,7 +58,7 @@ class CLS():
 		self.net.eval()
 		self.ema = cfg.trainer.ema
 		if self.ema:
-			self.net_E = copy.deepcopy(self.net)
+			self.net_E = copy.deepcopy(self.net) 
 			self.net_E.eval()
 		else:
 			self.net_E = None
@@ -403,11 +405,16 @@ class CLS():
 			self.bilevel_train()
 		else:
 			print('Start inference speed testing...')
-			inference_speed = self.speed_test(self.net)
-			print('inference_speed (inaccurate):', inference_speed, 'images/s')
-			inference_speed = self.speed_test(self.net)
-			print('inference_speed:', inference_speed, 'images/s')
-			inference_speed = self.speed_test(self.net)
-			print('inference_speed:', inference_speed, 'images/s')
+			#inference_speed = self.speed_test(self.net)
+			#print('inference_speed (inaccurate):', inference_speed, 'images/s')
+			#inference_speed = self.speed_test(self.net)
+			#print('inference_speed:', inference_speed, 'images/s')
 			inference_speed = self.speed_test(self.net)
 			print('inference_speed:', inference_speed, 'images/s')
+			inference_speed = self.speed_test(self.net)
+			print('inference_speed:', inference_speed, 'images/s')
+			with profiler.profile(use_cuda=torch.cuda.is_available()) as prof:
+					x = torch.rand(128, 3, 224, 224).cuda()
+					self.net.eval()
+					self.net(x)
+			print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
