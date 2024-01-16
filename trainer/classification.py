@@ -303,6 +303,37 @@ class CLS():
 			save_checkpoint(checkpoint_info, is_best=self.is_best, is_best_ema=self.is_best_ema, log_dir=self.cfg.logdir, prefix='latest')
 		self.is_best, self.is_best_ema = False, False
 			
+	def speed_test(self, model, ntest=100, batchsize=128):
+		import time
+		x = torch.rand(batchsize, 3, 224, 224).cuda()
+		model.eval()
+
+		start = time.time()
+		for i in range(ntest):
+			model(x)
+		torch.cuda.synchronize()
+		end = time.time()
+
+		elapse = end - start
+		speed = batchsize * ntest / elapse
+
+		return speed
+      
 	def run(self):
 		log_msg(self.logger, f'==> Starting {self.cfg.mode}ing with {self.cfg.nnodes} nodes x {self.cfg.ngpus_per_node} GPUs')
-		self.train() if self.cfg.mode in ['train', 'ft'] else self.test_net(self.net, name='net')
+		if self.cfg.mode in ['train', 'ft']:
+			self.train()
+		elif self.cfg.mode in ['test']:
+			self.test_net(self.net, name='net')
+		elif self.cfg.mode in ['bilevel_opt']:
+			self.bilevel_train()
+		else:
+			print('Start inference speed testing...')
+			inference_speed = self.speed_test(self.net)
+			print('inference_speed (inaccurate):', inference_speed, 'images/s')
+			inference_speed = self.speed_test(self.net)
+			print('inference_speed:', inference_speed, 'images/s')
+			inference_speed = self.speed_test(self.net)
+			print('inference_speed:', inference_speed, 'images/s')
+			inference_speed = self.speed_test(self.net)
+			print('inference_speed:', inference_speed, 'images/s')
