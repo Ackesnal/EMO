@@ -52,6 +52,7 @@ class iRMB(nn.Module):
         dim_mid = int(dim_in * exp_ratio)
         self.attn_s = attn_s
         self.conv_branch = conv_branch
+        self.downsample = True if stride > 1 else False
         self.shuffle = shuffle
         self.norm = get_norm(norm_layer)(dim_in) if norm_in else nn.Identity()
         if self.attn_s:
@@ -233,15 +234,27 @@ class iRMB(nn.Module):
                 
         # Case 2: Downsampling layer
         else:
-            # FFN
-            x = self.norm(x)
-            x = self.ffn_in(x)
-            x = self.conv_local(x)
-            x = self.ffn_act(x)
-            x = self.ffn_out(x)
-            # Drop path
-            x = self.drop_path(x)
-            return x
+            if self.downsample:
+                # FFN
+                x = self.norm(x)
+                x = self.ffn_in(x)
+                x = self.conv_local(x)
+                x = self.ffn_act(x)
+                x = self.ffn_out(x)
+                # Drop path
+                x = self.drop_path(x)
+                return x
+            else:
+                shortcut = x
+                # FFN
+                x = self.norm(x)
+                x = self.ffn_in(x)
+                x = self.conv_local(x)
+                x = self.ffn_act(x)
+                x = self.ffn_out(x)
+                # Drop path
+                x = self.drop_path(x) + shortcut
+                return x
 
 
 class EMO(nn.Module):
@@ -423,9 +436,9 @@ def EMO_6M(pretrained=False, **kwargs):
 @MODEL.register_module
 def EMO_6M_AllSelfAttention(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 12, 3], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[2., 3., 3., 3.],
+                depths=[4, 4, 12, 4], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[2., 3., 3., 3.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
+                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[False, True, True, True],
                 qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, 
                 **kwargs)
