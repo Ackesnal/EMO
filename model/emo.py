@@ -489,7 +489,7 @@ def EMO_6M(pretrained=False, **kwargs):
     
 
 @MODEL.register_module
-def EMO_6M_AllSelfAttention(pretrained=False, **kwargs):
+def FastAllSelfAttention_8M_1G_SingleBranch(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
                 depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[3., 3., 3., 3.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
@@ -501,7 +501,7 @@ def EMO_6M_AllSelfAttention(pretrained=False, **kwargs):
     
 
 @MODEL.register_module
-def EMO_6M_AllSelfAttention_4BranchInStage4(pretrained=False, **kwargs):
+def FastAllSelfAttention_8M_1G_4BranchInStage4(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
                 depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[3., 3., 3., 3.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
@@ -513,13 +513,24 @@ def EMO_6M_AllSelfAttention_4BranchInStage4(pretrained=False, **kwargs):
     
     
 @MODEL.register_module
-def EMO_6M_AllSelfAttention_4BranchInStage34(pretrained=False, **kwargs):
+def FastAllSelfAttention_8M_1G_4BranchInStage34(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
                 depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[3., 3., 3., 3.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
                 dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
                 qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, False, True, True], shuffle=False, conv_local=False, 
+                **kwargs)
+    return model
+    
+@MODEL.register_module
+def FastAllSelfAttention_8M_1G_4BranchInStage234(pretrained=False, **kwargs):
+    model = EMO(# dim_in=3, num_classes=1000, img_size=224,
+                depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[3., 3., 3., 3.],
+                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
+                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
+                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
+                downsample_skip=False, conv_branchs=[False, True, True, True], shuffle=False, conv_local=False, 
                 **kwargs)
     return model
     
