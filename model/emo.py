@@ -78,7 +78,7 @@ class iRMB(nn.Module):
                                        kernel_size=3,
                                        stride=1,
                                        padding="same",
-                                       groups=dim)
+                                       groups=dim_in)
                 self.conv3_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
                 
                 self.conv5 = nn.Conv2d(in_channels=dim_in, 
@@ -86,7 +86,7 @@ class iRMB(nn.Module):
                                        kernel_size=5,
                                        stride=1,
                                        padding="same",
-                                       groups=dim)
+                                       groups=dim_in)
                 self.conv5_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
                 
                 self.conv7 = nn.Conv2d(in_channels=dim_in, 
@@ -94,7 +94,7 @@ class iRMB(nn.Module):
                                        kernel_size=7,
                                        stride=1,
                                        padding="same",
-                                       groups=dim)
+                                       groups=dim_in)
                 self.conv7_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
             
             # FFN with convolution
