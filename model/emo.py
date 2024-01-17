@@ -7,7 +7,7 @@ from model.basic_modules import get_norm, get_act, ConvNormAct, LayerScale2D, MS
 from functools import partial
 from model import MODEL
 import math
-import torch.utils.checkpoint as checkpoint
+import torch.utils.checkpoint as ckpt
 import torch.nn.functional as F
 import torch.nn as nn
 
@@ -54,7 +54,7 @@ class iRMB(nn.Module):
         self.conv_branch = conv_branch
         self.downsample = True if stride > 1 else False
         self.shuffle = shuffle
-        self.norm = get_norm(norm_layer)(dim_in) if norm_in else nn.Identity()
+        self.norm = nn.BatchNorm2d(dim_in)
         if self.attn_s:
             assert dim_in % dim_head == 0, 'dim should be divisible by num_heads'
             self.dim_head = dim_head
@@ -69,7 +69,6 @@ class iRMB(nn.Module):
                                 bias=qkv_bias)
                                
             self.drop = attn_drop
-            #self.act = nn.SiLU()
             
             if self.conv_branch:
                 self.attn_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
@@ -152,103 +151,168 @@ class iRMB(nn.Module):
             self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
 
     def forward(self, x):
-        # Shuffle tokens among windows when specified
-        B, C, H, W = x.shape
-        
-        # Case 1: Normal multi-branch layer
-        if self.attn_s:
-            # Pre-layer normalization
-            x = self.norm(x)
+        if self.training:
+            B, C, H, W = x.shape
             
-            # Convert x to window-based x
-            window_size_W, window_size_H = self.window_size, self.window_size
-            pad_l, pad_t = 0, 0
-            pad_r = (window_size_W - W % window_size_W) % window_size_W
-            pad_b = (window_size_H - H % window_size_H) % window_size_H
-            x = F.pad(x, (pad_l, pad_r, pad_t, pad_b, 0, 0,))
-            n1, n2 = (H + pad_b) // window_size_H, (W + pad_r) // window_size_W
-            x = rearrange(x, 'b c (h1 n1) (w1 n2) -> (b n1 n2) c h1 w1', n1=n1, n2=n2)#.contiguous()
-            
-            # Window-based x shape
-            b, c, h, w = x.shape
-            
-            # Calculate Query (Q) and Key (K)
-            qkv = self.qkv(x) # b, 3c, h, w
-            qkv = qkv.reshape(b, 3, self.num_head, c//self.num_head, h*w).permute(1, 0, 2, 4, 3) # 3, b, nh, h*w, c//nh
-            q, k, v = qkv[0], qkv[1], qkv[2] # b, nh, h*w, c//nh
-            
-            # Add shortcut 1
-            #v = v + x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(-1,-2).contiguous() # b, nh, h*w, c//nh
-            
-            # Self-attention
-            """
-            x_spa = F.scaled_dot_product_attention(query = q,
-                                                   key = k,
-                                                   value = v,
-                                                   dropout_p = self.drop) # b, nh, h*w, c//nh
-            x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
-            """
-            x_spa = torch.softmax(q @ k.transpose(-1,-2) * (c ** 0.5), dim=-1) @ v
-            x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
-            
-            """    
-            if self.conv_branch:
-                # Depth-wise convolutions
-                x_conv3 = self.conv3(x).contiguous() # b, c_mid, h, w
-                x_conv5 = self.conv5(x).contiguous() # b, c_mid, h, w
-                x_conv7 = self.conv7(x).contiguous() # b, c_mid, h, w
+            # Case 1: Normal multi-branch layer
+            if self.attn_s:
+                # Pre-layer normalization
+                x = self.norm(x)
+                
+                # Convert x to window-based x
+                window_size_W, window_size_H = self.window_size, self.window_size
+                pad_l, pad_t = 0, 0
+                pad_r = (window_size_W - W % window_size_W) % window_size_W
+                pad_b = (window_size_H - H % window_size_H) % window_size_H
+                x = F.pad(x, (pad_l, pad_r, pad_t, pad_b, 0, 0,))
+                n1, n2 = (H + pad_b) // window_size_H, (W + pad_r) // window_size_W
+                x = rearrange(x, 'b c (h1 n1) (w1 n2) -> (b n1 n2) c h1 w1', n1=n1, n2=n2)#.contiguous()
+                
+                # Window-based x shape
+                b, c, h, w = x.shape
+                
+                # Calculate Query (Q) and Key (K)
+                qkv = self.qkv(x) # b, 3c, h, w
+                qkv = qkv.reshape(b, 3, self.num_head, c//self.num_head, h*w).permute(1, 0, 2, 4, 3).contiguous() # 3, b, nh, h*w, c//nh
+                q, k, v = qkv[0], qkv[1], qkv[2] # b, nh, h*w, c//nh
+                
+                # Add shortcut 1
+                v = v + x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(-1,-2)  # b, nh, h*w, c//nh
+                
+                # Self-attention
+                x_spa = F.scaled_dot_product_attention(query = q,
+                                                       key = k,
+                                                       value = v,
+                                                       dropout_p = self.drop) # b, nh, h*w, c//nh
+                                                                                                          
+                x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
+                
+                if self.conv_branch:
+                    # Depth-wise convolutions
+                    x_conv3 = self.conv3(x).contiguous() # b, c_mid, h, w
+                    x_conv5 = self.conv5(x).contiguous() # b, c_mid, h, w
+                    x_conv7 = self.conv7(x).contiguous() # b, c_mid, h, w
+                        
+                    # Fuse the outputs, with shortcut
+                    x_spa = x_spa * self.attn_weight + \
+                            x_conv3 * self.conv3_weight + \
+                            x_conv5 * self.conv5_weight + \
+                            x_conv7 * self.conv7_weight # b, c, h, w
+                
                     
-                # Fuse the outputs, with shortcut
-                x_spa = x_spa * self.attn_weight + \
-                        x_conv3 * self.conv3_weight + \
-                        x_conv5 * self.conv5_weight + \
-                        x_conv7 * self.conv7_weight # b, c, h, w
-            """
+                # Add shortcut 2
+                x = x_spa + v.transpose(-1,-2).reshape(b, c, h, w)
+    
+                # Convert x to original x
+                x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2)#.contiguous()
+                if pad_r > 0 or pad_b > 0:
+                    x = x[:, :, :H, :W] # B, C, H, W
                 
-            # Add shortcut 2
-            # x = x_spa + x
-
-            # Convert x to original x
-            x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2)#.contiguous()
-            if pad_r > 0 or pad_b > 0:
-                x = x[:, :, :H, :W]#.contiguous() # B, C, H, W
-            
-            
-            # FFN
-            shortcut = x
-            x = self.ffn_in(x)
-            x = self.conv_local(x)
-            x = self.ffn_act(x)
-            x = self.ffn_out(x)
-            
-            # Drop path and shortcut
-            x = self.drop_path(x) + shortcut
-            
-            return x
                 
-        # Case 2: Downsampling layer
-        else:
-            if self.downsample:
                 # FFN
-                x = self.norm(x)
-                x = self.ffn_in(x)
-                x = self.conv_local(x)
-                x = self.ffn_act(x)
-                x = self.ffn_out(x)
-                # Drop path
-                x = self.drop_path(x)
-                return x
-            else:
                 shortcut = x
-                # FFN
-                x = self.norm(x)
                 x = self.ffn_in(x)
                 x = self.conv_local(x)
                 x = self.ffn_act(x)
                 x = self.ffn_out(x)
-                # Drop path
+                
+                # Drop path and shortcut
                 x = self.drop_path(x) + shortcut
+                
                 return x
+                    
+            # Case 2: Downsampling layer
+            else:
+                if self.downsample:
+                    # FFN
+                    x = self.norm(x)
+                    x = self.ffn_in(x)
+                    x = self.conv_local(x)
+                    x = self.ffn_act(x)
+                    x = self.ffn_out(x)
+                    # Drop path
+                    x = self.drop_path(x)
+                    return x
+                else:
+                    shortcut = x
+                    # FFN
+                    x = self.norm(x)
+                    x = self.ffn_in(x)
+                    x = self.conv_local(x)
+                    x = self.ffn_act(x)
+                    x = self.ffn_out(x)
+                    # Drop path
+                    x = self.drop_path(x) + shortcut
+                    return x
+        
+        else:
+            B, C, H, W = x.shape
+            
+            # Case 1: Normal multi-branch layer
+            if self.attn_s:
+                # Convert x to window-based x
+                window_size_W, window_size_H = self.window_size, self.window_size
+                pad_l, pad_t = 0, 0
+                pad_r = (window_size_W - W % window_size_W) % window_size_W
+                pad_b = (window_size_H - H % window_size_H) % window_size_H
+                x = F.pad(x, (pad_l, pad_r, pad_t, pad_b, 0, 0,))
+                n1, n2 = (H + pad_b) // window_size_H, (W + pad_r) // window_size_W
+                x = rearrange(x, 'b c (h1 n1) (w1 n2) -> (b n1 n2) c h1 w1', n1=n1, n2=n2)#.contiguous()
+                
+                # Window-based x shape
+                b, c, h, w = x.shape
+                
+                # Calculate Query (Q) and Key (K)
+                qkv = self.qkv(x) # b, 3c, h, w
+                qkv = qkv.reshape(b, 3, self.num_head, c//self.num_head, h*w).permute(1, 0, 2, 4, 3).contiguous() # 3, b, nh, h*w, c//nh
+                q, k, v = qkv[0], qkv[1], qkv[2] # b, nh, h*w, c//nh
+                
+                # Self-attention
+                x_spa = F.scaled_dot_product_attention(query = q,
+                                                       key = k,
+                                                       value = v,
+                                                       dropout_p = self.drop) # b, nh, h*w, c//nh
+                                                                                                          
+                x_spa = x_spa.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
+                
+                # Convert x to original x
+                x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2)#.contiguous()
+                if pad_r > 0 or pad_b > 0:
+                    x = x[:, :, :H, :W] # B, C, H, W
+                
+                # FFN
+                shortcut = x
+                x = self.ffn_in(x)
+                x = self.conv_local(x)
+                x = self.ffn_act(x)
+                x = self.ffn_out(x)
+                
+                # Drop path and shortcut
+                x = self.drop_path(x) + shortcut
+                
+                return x
+                    
+            # Case 2: Downsampling layer
+            else:
+                if self.downsample:
+                    # FFN
+                    x = self.ffn_in(x)
+                    x = self.conv_local(x)
+                    x = self.ffn_act(x)
+                    x = self.ffn_out(x)
+                    # Drop path
+                    x = self.drop_path(x)
+                    return x
+                else:
+                    shortcut = x
+                    # FFN
+                    x = self.ffn_in(x)
+                    x = self.conv_local(x)
+                    x = self.ffn_act(x)
+                    x = self.ffn_out(x)
+                    # Drop path
+                    x = self.drop_path(x) + shortcut
+                    return x
 
 
 class EMO(nn.Module):
@@ -345,16 +409,28 @@ class EMO(nn.Module):
                 m.running_var = torch.nan_to_num(m.running_var, nan=0, posinf=1, neginf=-1)
 
     def forward_features(self, x):
-        for blk in self.stage0:
-            x = blk(x)
-        for blk in self.stage1:
-            x = blk(x)
-        for blk in self.stage2:
-            x = blk(x)
-        for blk in self.stage3:
-            x = blk(x)
-        for blk in self.stage4:
-            x = blk(x)
+        if self.training:
+            for blk in self.stage0:
+                x = ckpt.checkpoint(blk, x.requires_grad_(True))
+            for blk in self.stage1:
+                x = ckpt.checkpoint(blk, x.requires_grad_(True))
+            for blk in self.stage2:
+                x = ckpt.checkpoint(blk, x.requires_grad_(True))
+            for blk in self.stage3:
+                x = ckpt.checkpoint(blk, x.requires_grad_(True))
+            for blk in self.stage4:
+                x = ckpt.checkpoint(blk, x.requires_grad_(True))
+        else:
+            for blk in self.stage0:
+                x = blk(x)
+            for blk in self.stage1:
+                x = blk(x)
+            for blk in self.stage2:
+                x = blk(x)
+            for blk in self.stage3:
+                x = blk(x)
+            for blk in self.stage4:
+                x = blk(x)
         return x
 
     def forward(self, x):
@@ -415,9 +491,9 @@ def EMO_6M(pretrained=False, **kwargs):
 @MODEL.register_module
 def EMO_6M_AllSelfAttention(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[4, 4, 12, 4], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[2., 3., 3., 3.],
+                depths=[4, 4, 15, 6], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[2., 3., 3., 3.],
                 norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
+                dw_kss=[5, 5, 7, 7], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
                 qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
                 downsample_skip=False, conv_branchs=[False, False, False, False], shuffle=False, conv_local=False, 
                 **kwargs)
