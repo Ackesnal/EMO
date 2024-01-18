@@ -63,9 +63,12 @@ class CLS():
         else:
             self.net_E = None
         log_msg(self.logger, f"==> Load checkpoint: {cfg.model.model_kwargs['checkpoint_path']}") if cfg.model.model_kwargs['checkpoint_path'] else None
-        macs, params = get_model_complexity_info(self.net, (3, 224, 224), print_per_layer_stat=True, as_strings=True)
-        print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-        print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+        #####################
+        if next(self.net.parameters()).get_device()==0:
+            macs, params = get_model_complexity_info(self.net, (3, 224, 224), print_per_layer_stat=True, as_strings=True)
+            print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+            print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+        #####################
         self.dist_BN = cfg.trainer.dist_BN
         if cfg.dist and cfg.trainer.sync_BN != 'none':
             self.dist_BN = ''
@@ -241,6 +244,7 @@ class CLS():
             if self.iter % self.cfg.logging.train_reset_log_per == 0:
                 self.reset(isTrain=True, train_mode=self.train_mode)
             # ---------- update train_loader ----------
+            
             if self.iter % train_length == 0:
                 self.epoch += 1
                 if self.cfg.dist and self.dist_BN != '':
@@ -261,6 +265,7 @@ class CLS():
                 self.check_bn()
                 self.train_loader.sampler.set_epoch(int(self.epoch)) if self.cfg.dist else None
                 train_loader = iter(self.train_loader)
+            
         self._finish()
 
     def bilevel_train(self):

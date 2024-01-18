@@ -211,6 +211,7 @@ def reduce_tensor(tensor, world_size, mode='sum', sum_avg=True, rank=0):
 
 
 def distribute_bn(model, world_size, dist_bn):
+	print("YES")
 	# ensure every node has the same running bn stats
 	model = model.module if hasattr(model, 'module') else model
 	for bn_name, bn_buf in model.named_buffers(recurse=True):

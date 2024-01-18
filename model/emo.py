@@ -54,8 +54,8 @@ class iRMB(nn.Module):
         self.conv_branch = conv_branch
         self.downsample = True if stride > 1 else False
         self.shuffle = shuffle
-        self.norm = nn.BatchNorm2d(dim_in)
         if self.attn_s:
+            self.norm = nn.BatchNorm2d(dim_in)
             assert dim_in % dim_head == 0, 'dim should be divisible by num_heads'
             self.dim_head = dim_head
             self.window_size = window_size
@@ -111,6 +111,7 @@ class iRMB(nn.Module):
                                         padding="same",
                                         dilation=dilation,
                                         groups=dim_in)
+            #self.ffn_norm = nn.BatchNorm2d(dim_in)
             self.ffn_out = nn.Conv2d(in_channels=dim_in,
                                      out_channels=dim_out,
                                      kernel_size=1,
@@ -139,6 +140,7 @@ class iRMB(nn.Module):
                                         padding=padding,
                                         groups=dim_in,
                                         bias=qkv_bias)
+            self.ffn_norm = nn.BatchNorm2d(dim_out)
             self.ffn_out = nn.Conv2d(in_channels=dim_out,
                                      out_channels=dim_out,
                                      kernel_size=1,
@@ -147,18 +149,13 @@ class iRMB(nn.Module):
                                      groups=1,
                                      bias=qkv_bias)
             self.ffn_act = nn.SiLU()
-            # Final drop path
-            self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
 
     def forward(self, x):
-        if self.training:
+        if True:
             B, C, H, W = x.shape
             
             # Case 1: Normal multi-branch layer
             if self.attn_s:
-                # Pre-layer normalization
-                x = self.norm(x)
-                
                 # Convert x to window-based x
                 window_size_W, window_size_H = self.window_size, self.window_size
                 pad_l, pad_t = 0, 0
@@ -166,10 +163,13 @@ class iRMB(nn.Module):
                 pad_b = (window_size_H - H % window_size_H) % window_size_H
                 x = F.pad(x, (pad_l, pad_r, pad_t, pad_b, 0, 0,))
                 n1, n2 = (H + pad_b) // window_size_H, (W + pad_r) // window_size_W
-                x = rearrange(x, 'b c (h1 n1) (w1 n2) -> (b n1 n2) c h1 w1', n1=n1, n2=n2)#.contiguous()
+                x = rearrange(x, 'b c (h1 n1) (w1 n2) -> (b n1 n2) c h1 w1', n1=n1, n2=n2)
                 
                 # Window-based x shape
                 b, c, h, w = x.shape
+                
+                # Shortcut 1
+                shortcut = x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(-1,-2)
                 
                 # Calculate Query (Q) and Key (K)
                 qkv = self.qkv(x) # b, 3c, h, w
@@ -177,7 +177,10 @@ class iRMB(nn.Module):
                 q, k, v = qkv[0], qkv[1], qkv[2] # b, nh, h*w, c//nh
                 
                 # Add shortcut 1
-                v = v + x.reshape(b, self.num_head, c//self.num_head, h*w).transpose(-1,-2)  # b, nh, h*w, c//nh
+                v = v + shortcut * 1.2 # b, nh, h*w, c//nh
+                
+                # Shortcut 2
+                shortcut = v.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
                 
                 # Self-attention
                 x_spa = F.scaled_dot_product_attention(query = q,
@@ -189,60 +192,66 @@ class iRMB(nn.Module):
                 
                 if self.conv_branch:
                     # Depth-wise convolutions
-                    x_conv3 = self.conv3(x).contiguous() # b, c_mid, h, w
-                    x_conv5 = self.conv5(x).contiguous() # b, c_mid, h, w
-                    x_conv7 = self.conv7(x).contiguous() # b, c_mid, h, w
+                    x_conv3 = self.conv3(v).contiguous() # b, c_mid, h, w
+                    x_conv5 = self.conv5(v).contiguous() # b, c_mid, h, w
+                    x_conv7 = self.conv7(v).contiguous() # b, c_mid, h, w
                         
-                    # Fuse the outputs, with shortcut
+                    # Fuse the outputs
                     x_spa = x_spa * self.attn_weight + \
                             x_conv3 * self.conv3_weight + \
                             x_conv5 * self.conv5_weight + \
                             x_conv7 * self.conv7_weight # b, c, h, w
                 
-                    
                 # Add shortcut 2
-                x = x_spa + v.transpose(-1,-2).reshape(b, c, h, w)
+                x = x_spa + shortcut * 1.2
     
                 # Convert x to original x
-                x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2)#.contiguous()
+                x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2)
                 if pad_r > 0 or pad_b > 0:
                     x = x[:, :, :H, :W] # B, C, H, W
                 
-                
                 # FFN
+                # Shortcut 3
                 shortcut = x
                 x = self.ffn_in(x)
-                x = self.conv_local(x)
                 x = self.ffn_act(x)
+                x = self.conv_local(x)
                 x = self.ffn_out(x)
                 
-                # Drop path and shortcut
-                x = self.drop_path(x) + shortcut
+                # Add shortcut 3 with scale
+                x = x + shortcut * 1.2
                 
+                # Post-layer normalization
+                x = self.norm(x)
+                
+                if x.get_device()==0 and self.qkv.weight.grad is not None:
+                    print(self.ffn_out.weight.grad.mean(), self.ffn_out.weight.grad.max(), self.ffn_out.weight.grad.min())
+                #if x.get_device()==0:
+                #    print(x.mean(), x.max(), x.min())
+                
+                # DropPath
+                x = self.drop_path(x) 
                 return x
-                    
+                
             # Case 2: Downsampling layer
             else:
                 if self.downsample:
                     # FFN
-                    x = self.norm(x)
                     x = self.ffn_in(x)
                     x = self.conv_local(x)
-                    x = self.ffn_act(x)
                     x = self.ffn_out(x)
-                    # Drop path
-                    x = self.drop_path(x)
+                    # Post-layer normalization
+                    x = self.ffn_norm(x)
                     return x
                 else:
                     shortcut = x
                     # FFN
-                    x = self.norm(x)
                     x = self.ffn_in(x)
                     x = self.conv_local(x)
+                    x = self.ffn_norm(x)
                     x = self.ffn_act(x)
                     x = self.ffn_out(x)
-                    # Drop path
-                    x = self.drop_path(x) + shortcut
+                    x = x + shortcut
                     return x
         
         else:
@@ -368,7 +377,7 @@ class EMO(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
+        if isinstance(m, (nn.Linear, nn.Conv2d)):
             trunc_normal_(m.weight, std=.02)
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
@@ -411,15 +420,15 @@ class EMO(nn.Module):
     def forward_features(self, x):
         if self.training:
             for blk in self.stage0:
-                x = ckpt.checkpoint(blk, x.requires_grad_(True))
+                x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage1:
-                x = ckpt.checkpoint(blk, x.requires_grad_(True))
+                x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage2:
-                x = ckpt.checkpoint(blk, x.requires_grad_(True))
+                x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage3:
-                x = ckpt.checkpoint(blk, x.requires_grad_(True))
+                x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage4:
-                x = ckpt.checkpoint(blk, x.requires_grad_(True))
+                x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
         else:
             for blk in self.stage0:
                 x = blk(x)
