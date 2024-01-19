@@ -111,7 +111,7 @@ class iRMB(nn.Module):
                                         padding="same",
                                         dilation=dilation,
                                         groups=dim_in)
-            #self.ffn_norm = nn.BatchNorm2d(dim_in)
+            self.ffn_norm = nn.BatchNorm2d(dim_in)
             self.ffn_out = nn.Conv2d(in_channels=dim_in,
                                      out_channels=dim_out,
                                      kernel_size=1,
@@ -177,7 +177,7 @@ class iRMB(nn.Module):
                 q, k, v = qkv[0], qkv[1], qkv[2] # b, nh, h*w, c//nh
                 
                 # Add shortcut 1
-                v = v + shortcut * 1.2 # b, nh, h*w, c//nh
+                v = v + shortcut * 0.5 # b, nh, h*w, c//nh
                 
                 # Shortcut 2
                 shortcut = v.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
@@ -192,9 +192,9 @@ class iRMB(nn.Module):
                 
                 if self.conv_branch:
                     # Depth-wise convolutions
-                    x_conv3 = self.conv3(v).contiguous() # b, c_mid, h, w
-                    x_conv5 = self.conv5(v).contiguous() # b, c_mid, h, w
-                    x_conv7 = self.conv7(v).contiguous() # b, c_mid, h, w
+                    x_conv3 = self.conv3(shortcut) # b, c_mid, h, w
+                    x_conv5 = self.conv5(shortcut) # b, c_mid, h, w
+                    x_conv7 = self.conv7(shortcut) # b, c_mid, h, w
                         
                     # Fuse the outputs
                     x_spa = x_spa * self.attn_weight + \
@@ -202,8 +202,11 @@ class iRMB(nn.Module):
                             x_conv5 * self.conv5_weight + \
                             x_conv7 * self.conv7_weight # b, c, h, w
                 
+                # Post-layer normalization 1
+                x_spa = self.norm(x_spa)
+                
                 # Add shortcut 2
-                x = x_spa + shortcut * 1.2
+                x = x_spa + shortcut * 0.5
     
                 # Convert x to original x
                 x = rearrange(x, '(b n1 n2) c h1 w1 -> b c (h1 n1) (w1 n2)', n1=n1, n2=n2)
@@ -214,23 +217,21 @@ class iRMB(nn.Module):
                 # Shortcut 3
                 shortcut = x
                 x = self.ffn_in(x)
-                x = self.ffn_act(x)
                 x = self.conv_local(x)
                 x = self.ffn_out(x)
-                
-                # Add shortcut 3 with scale
-                x = x + shortcut * 1.2
-                
-                # Post-layer normalization
-                x = self.norm(x)
-                
-                if x.get_device()==0 and self.qkv.weight.grad is not None:
-                    print(self.ffn_out.weight.grad.mean(), self.ffn_out.weight.grad.max(), self.ffn_out.weight.grad.min())
-                #if x.get_device()==0:
-                #    print(x.mean(), x.max(), x.min())
+                x = self.ffn_act(x)
+                x = self.ffn_norm(x)
                 
                 # DropPath
-                x = self.drop_path(x) 
+                x = self.drop_path(x)
+                
+                # Add shortcut 3 with scale
+                x = x + shortcut * 0.5
+                
+                #if x.get_device()==0 and self.qkv.weight.grad is not None:
+                #    print(self.ffn_in.weight.grad.mean(), self.ffn_in.weight.grad.max(), self.ffn_in.weight.grad.min())
+                #if x.get_device()==0:
+                #    print(x.mean(), x.max(), x.min())
                 return x
                 
             # Case 2: Downsampling layer
