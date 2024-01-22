@@ -64,8 +64,8 @@ class CLS():
             self.net_E = None
         log_msg(self.logger, f"==> Load checkpoint: {cfg.model.model_kwargs['checkpoint_path']}") if cfg.model.model_kwargs['checkpoint_path'] else None
         #####################
+        macs, params = get_model_complexity_info(self.net, (3, 224, 224), print_per_layer_stat=True, as_strings=True)
         if next(self.net.parameters()).get_device()==0:
-            macs, params = get_model_complexity_info(self.net, (3, 224, 224), print_per_layer_stat=True, as_strings=True)
             print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
             print('{:<30}  {:<8}'.format('Number of parameters: ', params))
         #####################
