@@ -46,7 +46,7 @@ class iRMB(nn.Module):
     def __init__(self, dim_in, dim_out, norm_layer='bn_2d', act_layer='relu', 
                  dw_ks=3, stride=1, dilation=1, dim_head=64, window_size=7,
                  attn_s=True, qkv_bias=False, attn_drop=0., drop_path=0.,
-                 conv_branch=False, alpha=2, beta=2, theta=2):
+                 conv_branch=False, alpha=0.1, beta=0.2, theta=0.5):
         super().__init__()
         self.attn_s = attn_s
         self.conv_branch = conv_branch
@@ -166,9 +166,9 @@ class iRMB(nn.Module):
                 if self.conv_branch:
                     x_conv = v.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
                     # Depth-wise convolutions
-                    x_conv3 = self.conv3(shortcut).permute(0,2,3,1) # b, h, w, c
-                    x_conv5 = self.conv5(shortcut).permute(0,2,3,1) # b, h, w, c
-                    x_conv7 = self.conv7(shortcut).permute(0,2,3,1) # b, h, w, c
+                    x_conv3 = self.conv3(x_conv).permute(0,2,3,1) # b, h, w, c
+                    x_conv5 = self.conv5(x_conv).permute(0,2,3,1) # b, h, w, c
+                    x_conv7 = self.conv7(x_conv).permute(0,2,3,1) # b, h, w, c
                         
                     # Fuse the outputs
                     x_spa = x_spa * self.attn_weight + \
@@ -418,11 +418,11 @@ def FastAllSelfAttention_8M_1G_SingleBranch(pretrained=False, **kwargs):
 @MODEL.register_module
 def FastAllSelfAttention_8M_1G_4BranchInStage4(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[3., 3., 3., 3.],
-                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, False, True], shuffle=False, conv_local=False, 
+                depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], dim_heads=[16, 16, 32, 32],
+                norm_layers=['ln_2d', 'ln_1d', 'ln_1d', 'ln_1d'], act_layers=['silu', 'silu', 'silu', 'silu'],
+                dw_kss=[3, 3, 5, 5], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
+                qkv_bias=True, attn_drop=0., drop_path=0.02, pre_dim=0,
+                conv_branchs=[False, False, False, True], conv_local=False,
                 **kwargs)
     return model
     
@@ -430,22 +430,22 @@ def FastAllSelfAttention_8M_1G_4BranchInStage4(pretrained=False, **kwargs):
 @MODEL.register_module
 def FastAllSelfAttention_8M_1G_4BranchInStage34(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[3., 3., 3., 3.],
-                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, False, True, True], shuffle=False, conv_local=False, 
+                depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], dim_heads=[16, 16, 32, 32],
+                norm_layers=['ln_2d', 'ln_1d', 'ln_1d', 'ln_1d'], act_layers=['silu', 'silu', 'silu', 'silu'],
+                dw_kss=[3, 3, 5, 5], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
+                qkv_bias=True, attn_drop=0., drop_path=0.02, pre_dim=0,
+                conv_branchs=[False, False, True, True], conv_local=False,
                 **kwargs)
     return model
     
 @MODEL.register_module
 def FastAllSelfAttention_8M_1G_4BranchInStage234(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[3., 3., 3., 3.],
-                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
-                downsample_skip=False, conv_branchs=[False, True, True, True], shuffle=False, conv_local=False, 
+                depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], dim_heads=[16, 16, 32, 32],
+                norm_layers=['ln_2d', 'ln_1d', 'ln_1d', 'ln_1d'], act_layers=['silu', 'silu', 'silu', 'silu'],
+                dw_kss=[3, 3, 5, 5], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
+                qkv_bias=True, attn_drop=0., drop_path=0.02, pre_dim=0,
+                conv_branchs=[False, True, True, True], conv_local=False,
                 **kwargs)
     return model
     
@@ -453,11 +453,11 @@ def FastAllSelfAttention_8M_1G_4BranchInStage234(pretrained=False, **kwargs):
 @MODEL.register_module
 def FastAllSelfAttention_8M_1G_4BranchInStage1234(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], exp_ratios=[3., 3., 3., 3.],
-                norm_layers=['ln_2d', 'ln_2d', 'ln_2d', 'ln_2d'], act_layers=['silu', 'silu', 'silu', 'silu'],
-                dw_kss=[3, 3, 5, 5], dim_heads=[16, 16, 32, 32], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop=0., drop_path=0.05, v_group=False, attn_pre=False, pre_dim=0,
-                downsample_skip=False, conv_branchs=[True, True, True, True], shuffle=False, conv_local=False, 
+                depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], dim_heads=[16, 16, 32, 32],
+                norm_layers=['ln_2d', 'ln_1d', 'ln_1d', 'ln_1d'], act_layers=['silu', 'silu', 'silu', 'silu'],
+                dw_kss=[3, 3, 5, 5], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
+                qkv_bias=True, attn_drop=0., drop_path=0.02, pre_dim=0,
+                conv_branchs=[True, True, True, True], conv_local=False,
                 **kwargs)
     return model 
 
