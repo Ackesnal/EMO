@@ -325,6 +325,7 @@ class CLS():
     @torch.no_grad()
     def test_net(self, net, name=''):
         self.reset(isTrain=False, train_mode=False)
+        net.module.reparam()
         batch_idx = 0
         test_length = self.cfg.data.test_size
         test_loader = iter(self.test_loader)
@@ -410,8 +411,8 @@ class CLS():
             self.bilevel_train()
         else:
             print('Start inference speed testing...')
-            #inference_speed = self.speed_test(self.net)
-            #print('inference_speed (inaccurate):', inference_speed, 'images/s')
+            inference_speed = self.speed_test(self.net)
+            print('inference_speed (inaccurate):', inference_speed, 'images/s')
             #inference_speed = self.speed_test(self.net)
             #print('inference_speed:', inference_speed, 'images/s')
             inference_speed = self.speed_test(self.net) 
@@ -422,4 +423,4 @@ class CLS():
                     x = torch.rand(128, 3, 224, 224).cuda()
                     self.net.eval()
                     self.net(x)
-            print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
+            print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
