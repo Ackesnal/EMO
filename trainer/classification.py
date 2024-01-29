@@ -413,8 +413,8 @@ class CLS():
 			print('inference_speed:', inference_speed, 'images/s')
 			inference_speed = self.speed_test(self.net)
 			print('inference_speed:', inference_speed, 'images/s')
+			x = torch.rand(128, 3, 224, 224).cuda()
+			self.net.eval()
 			with profiler.profile(use_cuda=torch.cuda.is_available()) as prof:
-					x = torch.rand(128, 3, 224, 224).cuda()
-					self.net.eval()
-					self.net(x)
+				self.net(x)
 			print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
