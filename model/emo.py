@@ -112,8 +112,10 @@ class iRMB(nn.Module):
             self.post_norm = nn.LayerNorm(dim_in)
                 
         else:
-            self.W = W 
-            self.H = H
+            self.n1_input = H // self.window_size
+            self.n2_input = W // self.window_size
+            self.n1_output = H // self.window_size // 2
+            self.n2_output = W // self.window_size // 2
             self.window_input = window_input
             # FFN with convolution
             self.ffn_in = nn.Conv2d(in_channels=dim_in,
@@ -129,7 +131,7 @@ class iRMB(nn.Module):
                                         padding=math.ceil((dw_ks-stride)/2),
                                         groups=dim_in,
                                         bias=qkv_bias)
-            self.ffn_act = nn.SiLU()
+            self.ffn_act = nn.SiLU(inplace=True)
             self.ffn_out = nn.Conv2d(in_channels=dim_out,
                                      out_channels=dim_out,
                                      kernel_size=1,
@@ -242,22 +244,22 @@ class iRMB(nn.Module):
                 
                 # Calculate Query (Q) and Key (K)
                 qkv = self.qkv(x) # B, N, 3C
-                qkv = qkv.reshape(B, N, 3, self.num_head, C//self.num_head).permute(2, 0, 3, 1, 4) # 3, B, nh, N, C//nh
-                q, k, v = qkv[0], qkv[1], qkv[2] # B, nh, N, C//nh
+                qkv = rearrange(qkv, 'b n (k nh hc) -> k (b nh) n hc', k=3, nh=self.num_head)
+                q, k, v = qkv[0], qkv[1]*self.scale, qkv[2] # B*nh, N, C//nh
                 
                 # Calculate reparameterized self-attention
-                attn = (q @ k.transpose(-2,-1) * self.scale).softmax(dim=-1)
-                attn = attn * self.attn_weight + self.attn_mask
-                x_spa = attn @ v # B, nh, N, C//nh
+                attn = torch.bmm(q, k.transpose(-2,-1)).softmax(dim=-1)
+                attn.mul_(self.attn_weight).add_(self.attn_mask)
+                x_spa = torch.bmm(attn, v) # B, nh, N, C//nh
                 
-                x = x_spa.transpose(1,2).reshape(B, N, C) # B, N, C
+                x = rearrange(x_spa, '(b nh) n hc -> b n (nh hc)', nh=self.num_head)
                 
                 # FFN
                 x = self.ffn_in(x) # B, N, C
                 
-                shortcut = x # B, N, C
-                x = self.ffn_act(x) # B, N, C
-                x = x + shortcut # B, N, C
+                #shortcut = x # B, N, C
+                self.ffn_act(x) # B, N, C
+                #x = x + shortcut # B, N, C
                 
                 x = self.ffn_out(x) # B, N, C
                 
@@ -268,24 +270,15 @@ class iRMB(nn.Module):
             # Case 2: Downsampling layer
             else:
                 # Convert x to original x
-                pad_l, pad_t = 0, 0
-                window_size_W, window_size_H = self.window_size, self.window_size
                 if self.window_input:
-                    n1, n2 = math.ceil(self.H / window_size_H), math.ceil(self.W / window_size_W)
-                    x = rearrange(x, '(b n1 n2) (h w) c -> b c (h n1) (w n2)', n1=n1, n2=n2, h=self.window_size)
-                    x = x[:, :, :self.H, :self.W] # B, C, H, W
+                    x = rearrange(x, '(b n1 n2) (h w) c -> b c (h n1) (w n2)', n1=self.n1_input, n2=self.n2_input, h=self.window_size)
                         
                 # FFN
                 x = self.ffn_in(x) # B, C, H, W
-                x = self.conv_local(x) # B, C, H, W                    
-                x = self.ffn_out(x) # B, C, H, W
+                x = self.conv_local(x) # B, 2C, H/2, W/2                    
+                x = self.ffn_out(x) # B, 2C, H/2, W/2
                     
-                pad_r = (window_size_W - (self.W//2) % window_size_W) % window_size_W
-                pad_b = (window_size_H - (self.H//2) % window_size_H) % window_size_H
-                n1, n2 = ((self.H//2) + pad_b) // window_size_H, ((self.W//2) + pad_r) // window_size_W
-                x = F.pad(x, (pad_l, pad_r, pad_t, pad_b, 0, 0,))
-                n1, n2 = math.ceil(self.H//2 / window_size_H), math.ceil(self.W//2 / window_size_W)
-                x = rearrange(x, 'b c (h n1) (w n2) -> (b n1 n2) (h w) c', n1=n1, n2=n2) 
+                x = rearrange(x, 'b c (h n1) (w n2) -> (b n1 n2) (h w) c', n1=self.n1_output, n2=self.n2_output) 
                     
                 # Post-layer normalization
                 x = self.post_norm(x) # B, H, W, C
@@ -303,7 +296,7 @@ class iRMB(nn.Module):
             
             # Reparam second shortcut
             self.attn_mask = torch.eye(self.window_size**2).to(self.qkv.weight.device)
-            self.attn_mask = self.attn_mask.reshape(1,1,self.window_size**2,self.window_size**2)
+            self.attn_mask = self.attn_mask.reshape(1,self.window_size**2,self.window_size**2)
             self.conv_mask = self.conv_mask * self.beta
             self.attn_mask = self.attn_mask + self.conv_mask
             self.attn_weight = self.attn_weight * self.beta
