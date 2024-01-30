@@ -59,7 +59,7 @@ class iRMB(nn.Module):
             self.scale = dim_head ** (-0.5)
             self.dim_in = dim_in
             self.num_head = dim_in // dim_head
-            self.qkv = nn.Linear(in_features=dim_in, out_features=dim_in*3, bias=qkv_bias)
+            self.qkv = nn.Linear(in_features=dim_in, out_features=dim_in*3)
             self.attn_mask = 0
             self.conv_mask = 0
             self.attn_weight = 1
@@ -240,11 +240,11 @@ class iRMB(nn.Module):
         else:
             # Case 1: Normal multi-branch layer
             if self.attn_s:
-                B, N, C = x.shape # B, N, C
+                B, C, N = x.shape # B, N, C
                 
                 # Calculate Query (Q) and Key (K)
-                qkv = self.qkv(x) # B, N, 3C
-                qkv = rearrange(qkv, 'b n (k nh hc) -> k (b nh) n hc', k=3, nh=self.num_head)
+                qkv = self.qkv(x) # B, 3C, N
+                qkv = rearrange(qkv, 'b n (T nh hc) -> T (b nh) n hc', T=3, nh=self.num_head)
                 q, k, v = qkv[0], qkv[1]*self.scale, qkv[2] # B*nh, N, C//nh
                 
                 # Calculate reparameterized self-attention
@@ -255,16 +255,12 @@ class iRMB(nn.Module):
                 x = rearrange(x_spa, '(b nh) n hc -> b n (nh hc)', nh=self.num_head)
                 
                 # FFN
-                x = self.ffn_in(x) # B, N, C
-                
-                #shortcut = x # B, N, C
+                shortcut = x # B, N, C
                 self.ffn_act(x) # B, N, C
-                #x = x + shortcut # B, N, C
+                x = x + shortcut # B, N, C
                 
                 x = self.ffn_out(x) # B, N, C
                 
-                # Add post normalization
-                #x = self.post_norm(x) # B, N, C
                 return x
                 
             # Case 2: Downsampling layer
@@ -279,9 +275,7 @@ class iRMB(nn.Module):
                 x = self.ffn_out(x) # B, 2C, H/2, W/2
                     
                 x = rearrange(x, 'b c (h n1) (w n2) -> (b n1 n2) (h w) c', n1=self.n1_output, n2=self.n2_output) 
-                    
-                # Post-layer normalization
-                x = self.post_norm(x) # B, H, W, C
+                
                 return x
         
     def reparam(self):
@@ -431,9 +425,9 @@ class EMO(nn.Module):
         x = self.forward_features(x)
         #x = self.norm(x)
         if self.training:
-            x = reduce(x, 'b h w c-> b c', 'mean').contiguous()
+            x = reduce(x, 'b h w c-> b c', 'mean')
         else:
-            x = reduce(x, 'b n c-> b c', 'mean').contiguous()
+            x = reduce(x, 'b n c-> b c', 'mean')
             
         x = self.pre_head(x)
         x = self.head(x)
