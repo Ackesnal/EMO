@@ -105,7 +105,11 @@ class iRMB(nn.Module):
             
             
             self.qkv = nn.Linear(self.dim_in, self.dim_in*3)
+            self.qkv.weight.requires_grad_(False)
+            self.qkv.bias.requires_grad_(False)
             self.ffn_out = nn.Linear(self.dim_in, self.dim_in)
+            self.ffn_out.weight.requires_grad_(False)
+            self.ffn_out.bias.requires_grad_(False)
         else:
             assert dim_out % dim_head == 0, 'dim should be divisible by num_heads'
             self.dim_head = dim_head
@@ -132,17 +136,13 @@ class iRMB(nn.Module):
                                      out_channels=dim_out,
                                      kernel_size=1,
                                      stride=1)
-            self.post_norm = nn.LayerNorm(self.dim_head)
+            self.post_norm = nn.LayerNorm(dim_out)
 
     def forward(self, x):
         if self.training:
             # Case 1: Normal multi-branch layer
             if self.attn_s:
-                # Shortcut 1
-                
-                #if x.get_device()==0:
-                #    print("Input:", x.var(-1), x.mean(-1), x.max(), x.min())
-                    
+                # Shortcut 1    
                 v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized = self.stadardization()
                 
                 shortcut = rearrange(x, 'b n (nh hc) -> (b nh) n hc', nh=self.num_head) # B*nh, N, C/nh
@@ -162,8 +162,6 @@ class iRMB(nn.Module):
                     
                 # Shortcut 2
                 shortcut = rearrange(v, '(b nh) n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
-                #if x.get_device()==0:
-                #    print("V:", shortcut.var(-1), shortcut.mean(-1), shortcut.max(), shortcut.min())
                     
                 # Calculate Attention (A) and attended X
                 attn = torch.bmm(q, k*self.scale).softmax(dim=-1) # B*nh, N, N
@@ -176,7 +174,6 @@ class iRMB(nn.Module):
                 if self.conv_branch:
                     x_conv = rearrange(v, '(b nh) (h w) hc -> b (nh hc) h w', nh=self.num_head, h=self.window_size, w=self.window_size) # B, C, h, w
                     # Depth-wise convolutions
-                    
                     x_conv3 = torch.nn.functional.conv2d(input = x_conv, 
                                                          weight = self.conv3_weight_orthogonal, 
                                                          bias = self.conv3_bias_zerocentric, 
@@ -208,35 +205,27 @@ class iRMB(nn.Module):
                     x_conv5 * self.conv5_weight + \
                     x_conv7 * self.conv7_weight) * 0.1 + \
                     shortcut # B, N, C
-                    
-                #if x.get_device()==0:
-                #    print("Attn:", x.var(-1), x.mean(-1), x.max(), x.min())
-                    
+                
                 # FFN
                 # Shortcut 3
                 shortcut = x # B, N, C
                 x = torch.nn.functional.linear(x, ffn_in_weight_normalized, ffn_in_bias_normalized)
                 x = x * 0.1 + shortcut
                 
-                #if x.get_device()==0:
-                #    print("FFN IN:", x.var(-1), x.mean(-1), x.max(), x.min())
-                
                 shortcut = x # B, N, C
                 x = self.ffn_act(x)
-                x = x * 0.1 - 0.0066 + shortcut
+                x = (x - 0.0070) * 0.1 + shortcut
                 
                 shortcut = x # B, N, C
                 x = torch.nn.functional.linear(x, ffn_out_weight_normalized, ffn_out_bias_normalized)
                 x = x * 0.1 + shortcut
-
-                #if x.get_device()==0:
-                #    print("FNN OUT:", x.var(-1), x.mean(-1), x.max(), x.min())                
-                if x.get_device()==0:
-                    print(self.ffn_out_weight.requires_grad, self.ffn_out_weight.grad)
+                            
+                if x.get_device()==0 and self.v_weight.grad is not None:
+                #    print(self.ffn_out_weight.requires_grad, self.ffn_out_weight.grad)
                 #    print(self.v_weight.requires_grad, v_weight_normalized.requires_grad, x.requires_grad)
-                #    print(self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
+                    print(self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
                 #    print(self.qkv.weight.grad.mean(), self.qkv.weight.grad.max(), self.qkv.weight.grad.min())
-                #    print(x.var(-1), x.mean(-1), x.max(), x.min())
+                #    print(x.var(-1), x.mean(-1), x.max(-1), x.min(-1))
                 return x
                 
             # Case 2: Downsampling layer
@@ -250,26 +239,20 @@ class iRMB(nn.Module):
                 x = self.conv_local(x) # B, 2C, H/2, W/2
                 x = self.ffn_out(x) # B, 2C, H/2, W/2
                     
-                x = rearrange(x, 'b (nh c) (h n1) (w n2) -> (b n1 n2) (h w) nh c', nh=self.num_head, n1=self.n1_output, n2=self.n2_output) 
+                x = rearrange(x, 'b c (h n1) (w n2) -> (b n1 n2) (h w) c', n1=self.n1_output, n2=self.n2_output) 
                 x = self.post_norm(x)
-                x = rearrange(x, 'b n nh c -> b n (nh c)')
                 return x
                     
         else:
             # Case 1: Normal multi-branch layer
             if self.attn_s:
-                qkv = self.qkv(x)
-                qkv = rearrange(qkv, 'b n (t nh hc) -> t (b nh) n hc', t=3, nh=self.num_head) # B*nh, N, C//nh
-                q, k, v = qkv[0], qkv[1]*self.scale, qkv[2]
+                qkv = rearrange(self.qkv(x), 'b n (t nh hc) -> t (b nh) n hc', t=3, nh=self.num_head) # B*nh, N, C//nh
                 
-                attn = torch.bmm(q, k.transpose(-1,-2)).softmax(dim=-1)  # B*nh, N, N
-                attn.mul_(self.attn_weight).add_(self.attn_mask) # B*nh, N, N
-                x_spa = torch.bmm(attn, v) # B*nh, N, C//nh
-                x = rearrange(x_spa, '(b nh) n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
+                attn = torch.bmm(qkv[0], (qkv[1]*self.scale).transpose(-1,-2)).softmax(dim=-1).mul_(self.attn_weight).add_(self.attn_mask) # B*nh, N, N
+                x = rearrange(torch.bmm(attn, qkv[2]), '(b nh) n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
                 
                 shortcut = x # B, N, C
-                x = self.ffn_act(x)
-                x = x * 0.1 - 0.0066 + shortcut
+                x = self.ffn_act(x) * 0.1 - 0.0066 + shortcut
                 
                 x = self.ffn_out(x)
                 return x
@@ -284,9 +267,8 @@ class iRMB(nn.Module):
                 x = self.conv_local(x) # B, 2C, H/2, W/2                    
                 x = self.ffn_out(x) # B, 2C, H/2, W/2
                     
-                x = rearrange(x, 'b (nh c) (h n1) (w n2) -> (b n1 n2) (h w) nh c', nh=self.num_head, n1=self.n1_output, n2=self.n2_output) 
+                x = rearrange(x, 'b c (h n1) (w n2) -> (b n1 n2) (h w) c', n1=self.n1_output, n2=self.n2_output)
                 x = self.post_norm(x)
-                x = rearrange(x, 'b n nh c -> b n (nh c)')
                 return x
                 
                 
@@ -345,8 +327,7 @@ class iRMB(nn.Module):
         return v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized
         
     def reparam(self):
-        if self.attn_s:
-            
+        if self.attn_s:            
             C = self.qkv.weight.shape[1] # [C*3, C]
             
             # Reparam first shortcut
@@ -412,7 +393,7 @@ class EMO(nn.Module):
                 emb_dim_pre = embed_dims[i]
             self.__setattr__(f'stage{i + 1}', nn.ModuleList(layers))
         
-        #self.norm = get_norm(norm_layers[-1])(embed_dims[-1])
+        self.norm = nn.LayerNorm(embed_dims[-1])
         if pre_dim > 0:
             self.pre_head = nn.Sequential(nn.Linear(embed_dims[-1], pre_dim), get_act(act_layers[-1])(inplace=inplace))
             self.pre_dim = pre_dim
@@ -490,7 +471,7 @@ class EMO(nn.Module):
 
     def forward(self, x):
         x = self.forward_features(x)
-        #x = self.norm(x)
+        x = self.norm(x)
         x = reduce(x, 'b n c-> b c', 'mean')
             
         x = self.pre_head(x)
