@@ -59,7 +59,16 @@ class iRMB(nn.Module):
             self.scale = dim_head ** (-0.5)
             self.dim_in = dim_in
             self.num_head = dim_in // dim_head
-            self.qkv = nn.Linear(in_features=dim_in, out_features=dim_in*3)
+            
+            # KQV
+            self.q_weight = nn.Parameter(torch.rand((dim_in, dim_in)))
+            self.q_bias = nn.Parameter(torch.rand((dim_in)))
+            self.k_weight = nn.Parameter(torch.rand((dim_in, dim_in)))
+            self.k_bias = nn.Parameter(torch.rand((dim_in)))
+            self.v_weight = nn.Parameter(torch.rand((dim_in, dim_in)))
+            self.v_bias = nn.Parameter(torch.rand((dim_in)))
+            self.attn_weight = 0.25 if self.conv_branch else 1
+            
             self.attn_mask = 0
             self.conv_mask = 0
             self.attn_weight = 1
@@ -68,39 +77,25 @@ class iRMB(nn.Module):
             self.theta = theta
             self.drop = attn_drop
             
+            # Convolution branches
+            self.conv3_weight = 0.25
+            self.conv5_weight = 0.25
+            self.conv7_weight = 0.25
             if self.conv_branch:
-                self.attn_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
+                self.conv3_weight = nn.Parameter(torch.rand((dim_in, 1, 3, 3)))
+                self.conv3_bias = nn.Parameter(torch.rand((dim_in)))
                 
-                self.conv3 = nn.Conv2d(in_channels=dim_in, 
-                                       out_channels=dim_in,
-                                       kernel_size=3,
-                                       stride=1,
-                                       padding="same",
-                                       groups=dim_in,
-                                       bias=qkv_bias)
-                self.conv3_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
+                self.conv5_weight = nn.Parameter(torch.rand((dim_in, 1, 5, 5)))
+                self.conv5_bias = nn.Parameter(torch.rand((dim_in)))
                 
-                self.conv5 = nn.Conv2d(in_channels=dim_in, 
-                                       out_channels=dim_in, 
-                                       kernel_size=5,
-                                       stride=1,
-                                       padding="same",
-                                       groups=dim_in,
-                                       bias=qkv_bias)
-                self.conv5_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
+                self.conv7_weight = nn.Parameter(torch.rand((dim_in, 1, 7, 7)))
+                self.conv7_bias = nn.Parameter(torch.rand((dim_in)))
                 
-                self.conv7 = nn.Conv2d(in_channels=dim_in, 
-                                       out_channels=dim_in, 
-                                       kernel_size=7,
-                                       stride=1,
-                                       padding="same",
-                                       groups=dim_in,
-                                       bias=qkv_bias)
-                self.conv7_weight = 0.25 # nn.Parameter(torch.rand((1, dim, 1, 1)))
-            
             # FFN
-            self.ffn_in = nn.Linear(in_features=dim_in, out_features=dim_in, bias=qkv_bias)
-            self.ffn_out = nn.Linear(in_features=dim_in, out_features=dim_in, bias=qkv_bias)
+            self.ffn_in_weight = nn.Parameter(torch.rand((dim_in, dim_in)))
+            self.ffn_in_bias = nn.Parameter(torch.rand((dim_in)))
+            self.ffn_out_weight = nn.Parameter(torch.rand((dim_in, dim_in)))
+            self.ffn_out_bias = nn.Parameter(torch.rand((dim_in)))
             self.ffn_act = nn.SiLU()
             
             # drop paths
@@ -108,10 +103,13 @@ class iRMB(nn.Module):
             self.drop_path_2 = DropPath(drop_path) if drop_path else nn.Identity()
             self.drop_path_3 = DropPath(drop_path) if drop_path else nn.Identity()
             
-            # Post layer norm
-            self.post_norm = nn.LayerNorm(dim_in)
-                
+            
+            self.qkv = nn.Linear(self.dim_in, self.dim_in*3)
+            self.ffn_out = nn.Linear(self.dim_in, self.dim_in)
         else:
+            assert dim_out % dim_head == 0, 'dim should be divisible by num_heads'
+            self.dim_head = dim_head
+            self.num_head = dim_out // dim_head
             self.n1_input = H // self.window_size
             self.n2_input = W // self.window_size
             self.n1_output = H // self.window_size // 2
@@ -121,8 +119,7 @@ class iRMB(nn.Module):
             self.ffn_in = nn.Conv2d(in_channels=dim_in,
                                     out_channels=dim_in,
                                     kernel_size=1,
-                                    stride=1,
-                                    groups=dim_in)
+                                    stride=1)
             self.conv_local = nn.Conv2d(in_channels=dim_in,
                                         out_channels=dim_out,
                                         kernel_size=dw_ks,
@@ -131,138 +128,151 @@ class iRMB(nn.Module):
                                         padding=math.ceil((dw_ks-stride)/2),
                                         groups=dim_in,
                                         bias=qkv_bias)
-            self.ffn_act = nn.SiLU(inplace=True)
             self.ffn_out = nn.Conv2d(in_channels=dim_out,
                                      out_channels=dim_out,
                                      kernel_size=1,
-                                     stride=1,
-                                     groups=dim_out)
-            
-            # Post layer norm
-            self.post_norm = nn.LayerNorm(dim_out)
+                                     stride=1)
+            self.post_norm = nn.LayerNorm(self.dim_head)
 
     def forward(self, x):
         if self.training:
-            B, H, W, C = x.shape # B, H, W, C
-            
             # Case 1: Normal multi-branch layer
             if self.attn_s:
-                # Convert x to window-based x
-                window_size_W, window_size_H = self.window_size, self.window_size
-                pad_l, pad_t = 0, 0
-                pad_r = (window_size_W - W % window_size_W) % window_size_W
-                pad_b = (window_size_H - H % window_size_H) % window_size_H
-                x = F.pad(x, (pad_l, pad_r, pad_t, pad_b, 0, 0,))
-                n1, n2 = (H + pad_b) // window_size_H, (W + pad_r) // window_size_W
-                x = rearrange(x, 'b (h1 n1) (w1 n2) c -> (b n1 n2) h1 w1 c', n1=n1, n2=n2) 
-                
-                # Window-based x shape
-                b, h, w, c = x.shape
-                
                 # Shortcut 1
-                shortcut = x.reshape(b, h*w, self.num_head, c//self.num_head).transpose(1,2) # b, nh, h*w, c//nh
                 
-                # Calculate Query (Q) and Key (K)
-                qkv = self.qkv(x) # b, h, w, 3c
-                qkv = qkv.reshape(b, h*w, 3, self.num_head, c//self.num_head).permute(2, 0, 3, 1, 4).contiguous() # 3, b, nh, h*w, c//nh
-                q, k, v = qkv[0], qkv[1], qkv[2] # b, nh, h*w, c//nh
+                #if x.get_device()==0:
+                #    print("Input:", x.var(-1), x.mean(-1), x.max(), x.min())
+                    
+                v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized = self.stadardization()
                 
-                # Add shortcut 1 and drop path 1
-                v = self.drop_path_1(self.alpha * v) + shortcut # b, nh, h*w, c//nh
+                shortcut = rearrange(x, 'b n (nh hc) -> (b nh) n hc', nh=self.num_head) # B*nh, N, C/nh
                 
+                # Calculate Query (Q), Key (K) and Value (V)
+                q = torch.nn.functional.linear(x, self.q_weight, self.q_bias) # B, N, C
+                k = torch.nn.functional.linear(x, self.k_weight, self.k_bias) # B, N, C
+                v = torch.nn.functional.linear(x, v_weight_normalized, v_bias_normalized) # B, N, C
+                
+                # Reshape
+                q = rearrange(q, 'b n (nh hc) -> (b nh) n hc', nh=self.num_head) # B*nh, N, C//nh
+                k = rearrange(k, 'b n (nh hc) -> (b nh) hc n', nh=self.num_head) # B*nh, C//nh, N
+                v = rearrange(v, 'b n (nh hc) -> (b nh) n hc', nh=self.num_head) # B*nh, N, C//nh
+                
+                # Add shortcut to V
+                v = v * 0.1 + shortcut # B*nh, N, C//nh
+                    
                 # Shortcut 2
-                shortcut = v.transpose(1,2).reshape(b, h, w, c) # b, h, w, c
+                shortcut = rearrange(v, '(b nh) n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
+                #if x.get_device()==0:
+                #    print("V:", shortcut.var(-1), shortcut.mean(-1), shortcut.max(), shortcut.min())
+                    
+                # Calculate Attention (A) and attended X
+                attn = torch.bmm(q, k*self.scale).softmax(dim=-1) # B*nh, N, N
+                x_spa = torch.bmm(attn, v) # B*nh, N, C//nh
                 
-                # Self-attention
-                x_spa = F.scaled_dot_product_attention(query = q,
-                                                       key = k,
-                                                       value = v,
-                                                       dropout_p = self.drop) # b, nh, h*w, c//nh
-                                                                                                          
-                x_spa = x_spa.transpose(1,2).reshape(b, h, w, c) # b, h, w, c
+                # Reshape x_spa
+                x_spa = rearrange(x_spa, '(b nh) n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
                 
-                # Multiple branchs during training
+                # Multiple branches during training
                 if self.conv_branch:
-                    x_conv = v.transpose(-1,-2).reshape(b, c, h, w) # b, c, h, w
+                    x_conv = rearrange(v, '(b nh) (h w) hc -> b (nh hc) h w', nh=self.num_head, h=self.window_size, w=self.window_size) # B, C, h, w
                     # Depth-wise convolutions
-                    x_conv3 = self.conv3(x_conv).permute(0,2,3,1) # b, h, w, c
-                    x_conv5 = self.conv5(x_conv).permute(0,2,3,1) # b, h, w, c
-                    x_conv7 = self.conv7(x_conv).permute(0,2,3,1) # b, h, w, c
-                        
-                    # Fuse the outputs
-                    x_spa = x_spa * self.attn_weight + \
-                            x_conv3 * self.conv3_weight + \
-                            x_conv5 * self.conv5_weight + \
-                            x_conv7 * self.conv7_weight # b, h, w, c
+                    
+                    x_conv3 = torch.nn.functional.conv2d(input = x_conv, 
+                                                         weight = self.conv3_weight_orthogonal, 
+                                                         bias = self.conv3_bias_zerocentric, 
+                                                         stride = 1, 
+                                                         padding = 'same',
+                                                         groups = self.dim_in) # B, C, h, w
+                    
+                    x_conv5 = torch.nn.functional.conv2d(input = x_conv, 
+                                                         weight = self.conv5_weight_orthogonal, 
+                                                         bias = self.conv5_bias_zerocentric, 
+                                                         stride = 1, 
+                                                         padding = 'same',
+                                                         groups = self.dim_in) # B, C, h, w
+                    
+                    x_conv7 = torch.nn.functional.conv2d(input = x_conv, 
+                                                         weight = self.conv7_weight_orthogonal, 
+                                                         bias = self.conv7_bias_zerocentric, 
+                                                         stride = 1, 
+                                                         padding = 'same',
+                                                         groups = self.dim_in) # B, C, h, w
+                else:
+                    x_conv3 = 0
+                    x_conv5 = 0
+                    x_conv7 = 0
                 
-                # Add shortcut 2 and drop path 2
-                x = self.drop_path_2(self.beta * x_spa) + shortcut # b, h, w, c
-                
-                # Convert x to original x
-                x = rearrange(x, '(b n1 n2) h1 w1 c -> b (h1 n1) (w1 n2) c', n1=n1, n2=n2)
-                if pad_r > 0 or pad_b > 0:
-                    x = x[:, :H, :W, :] # B, H, W, C
-                
+                # Fuse the outputs
+                x = (x_spa * self.attn_weight + \
+                    x_conv3 * self.conv3_weight + \
+                    x_conv5 * self.conv5_weight + \
+                    x_conv7 * self.conv7_weight) * 0.1 + \
+                    shortcut # B, N, C
+                    
+                #if x.get_device()==0:
+                #    print("Attn:", x.var(-1), x.mean(-1), x.max(), x.min())
+                    
                 # FFN
                 # Shortcut 3
-                shortcut = x # B, H, W, C
-                x = self.ffn_in(x)
-                x = self.ffn_act(x)
-                x = self.ffn_out(x) # B, H, W, C
+                shortcut = x # B, N, C
+                x = torch.nn.functional.linear(x, ffn_in_weight_normalized, ffn_in_bias_normalized)
+                x = x * 0.1 + shortcut
                 
-                # Add shortcut 3 and drop path 3
-                x = self.drop_path_3(self.theta * x) + shortcut
-                    
-                # Add post normalization
-                x = self.post_norm(x)
-                
-                #if x.get_device()==0 and self.qkv.weight.grad is not None:
-                #    print(self.ffn_in.weight.grad.mean(), self.ffn_in.weight.grad.max(), self.ffn_in.weight.grad.min())
-                #if x.get_device()==0 and self.qkv.weight.grad is not None:
-                #    print(self.qkv.weight.grad.mean(), self.qkv.weight.grad.max(), self.qkv.weight.grad.min())
                 #if x.get_device()==0:
-                #    print(x.mean(), x.max(), x.min())
+                #    print("FFN IN:", x.var(-1), x.mean(-1), x.max(), x.min())
+                
+                shortcut = x # B, N, C
+                x = self.ffn_act(x)
+                x = x * 0.1 - 0.0066 + shortcut
+                
+                shortcut = x # B, N, C
+                x = torch.nn.functional.linear(x, ffn_out_weight_normalized, ffn_out_bias_normalized)
+                x = x * 0.1 + shortcut
+
+                #if x.get_device()==0:
+                #    print("FNN OUT:", x.var(-1), x.mean(-1), x.max(), x.min())                
+                if x.get_device()==0:
+                    print(self.ffn_out_weight.requires_grad, self.ffn_out_weight.grad)
+                #    print(self.v_weight.requires_grad, v_weight_normalized.requires_grad, x.requires_grad)
+                #    print(self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
+                #    print(self.qkv.weight.grad.mean(), self.qkv.weight.grad.max(), self.qkv.weight.grad.min())
+                #    print(x.var(-1), x.mean(-1), x.max(), x.min())
                 return x
                 
             # Case 2: Downsampling layer
             else:
+                # Convert x to original x
+                if self.window_input:
+                    x = rearrange(x, '(b n1 n2) (h w) c -> b c (h n1) (w n2)', n1=self.n1_input, n2=self.n2_input, h=self.window_size)
+                        
                 # FFN
-                x = x.permute(0,3,1,2) # B, C, H, W
-                x = self.ffn_in(x) # B, H, W, C
-                x = self.conv_local(x) # B, C, H, W
-                x = self.ffn_out(x) # B, H, W, C
-                x = x.permute(0,2,3,1) # B, H, W, C
+                x = self.ffn_in(x) # B, C, H, W
+                x = self.conv_local(x) # B, 2C, H/2, W/2
+                x = self.ffn_out(x) # B, 2C, H/2, W/2
                     
-                # Post-layer normalization
+                x = rearrange(x, 'b (nh c) (h n1) (w n2) -> (b n1 n2) (h w) nh c', nh=self.num_head, n1=self.n1_output, n2=self.n2_output) 
                 x = self.post_norm(x)
+                x = rearrange(x, 'b n nh c -> b n (nh c)')
                 return x
                     
         else:
             # Case 1: Normal multi-branch layer
             if self.attn_s:
-                B, C, N = x.shape # B, N, C
+                qkv = self.qkv(x)
+                qkv = rearrange(qkv, 'b n (t nh hc) -> t (b nh) n hc', t=3, nh=self.num_head) # B*nh, N, C//nh
+                q, k, v = qkv[0], qkv[1]*self.scale, qkv[2]
                 
-                # Calculate Query (Q) and Key (K)
-                qkv = self.qkv(x) # B, 3C, N
-                qkv = rearrange(qkv, 'b n (T nh hc) -> T (b nh) n hc', T=3, nh=self.num_head)
-                q, k, v = qkv[0], qkv[1]*self.scale, qkv[2] # B*nh, N, C//nh
+                attn = torch.bmm(q, k.transpose(-1,-2)).softmax(dim=-1)  # B*nh, N, N
+                attn.mul_(self.attn_weight).add_(self.attn_mask) # B*nh, N, N
+                x_spa = torch.bmm(attn, v) # B*nh, N, C//nh
+                x = rearrange(x_spa, '(b nh) n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
                 
-                # Calculate reparameterized self-attention
-                attn = torch.bmm(q, k.transpose(-2,-1)).softmax(dim=-1)
-                attn.mul_(self.attn_weight).add_(self.attn_mask)
-                x_spa = torch.bmm(attn, v) # B, nh, N, C//nh
-                
-                x = rearrange(x_spa, '(b nh) n hc -> b n (nh hc)', nh=self.num_head)
-                
-                # FFN
                 shortcut = x # B, N, C
-                self.ffn_act(x) # B, N, C
-                x = x + shortcut # B, N, C
+                x = self.ffn_act(x)
+                x = x * 0.1 - 0.0066 + shortcut
                 
-                x = self.ffn_out(x) # B, N, C
-                
+                x = self.ffn_out(x)
                 return x
-                
             # Case 2: Downsampling layer
             else:
                 # Convert x to original x
@@ -274,12 +284,69 @@ class iRMB(nn.Module):
                 x = self.conv_local(x) # B, 2C, H/2, W/2                    
                 x = self.ffn_out(x) # B, 2C, H/2, W/2
                     
-                x = rearrange(x, 'b c (h n1) (w n2) -> (b n1 n2) (h w) c', n1=self.n1_output, n2=self.n2_output) 
-                
+                x = rearrange(x, 'b (nh c) (h n1) (w n2) -> (b n1 n2) (h w) nh c', nh=self.num_head, n1=self.n1_output, n2=self.n2_output) 
+                x = self.post_norm(x)
+                x = rearrange(x, 'b n nh c -> b n (nh c)')
                 return x
+                
+                
+    def stadardization(self):
+        # For V's weights
+        weight = self.v_weight
+        weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
+        mean = weight.mean(dim=-1, keepdim=True)
+        std = weight.std(dim=-1, keepdim=True, correction=0)
+        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in))
+        v_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
+        v_weight_normalized = v_weight_normalized.T
+        
+        # For V's bias
+        bias = self.v_bias
+        bias = bias.reshape(self.num_head, self.dim_head)
+        mean = bias.mean(dim=-1, keepdim=True)
+        std = bias.std(dim=-1, keepdim=True, correction=0)
+        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in))
+        v_bias_normalized = bias_normalized.reshape(self.dim_in)
+        
+        # For ffn_in's weights
+        weight = self.ffn_in_weight
+        weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
+        mean = weight.mean(dim=-1, keepdim=True)
+        std = weight.std(dim=-1, keepdim=True, correction=0)
+        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in))
+        ffn_in_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
+        ffn_in_weight_normalized = ffn_in_weight_normalized.T
+        
+        # For ffn_in's bias
+        bias = self.ffn_in_bias
+        bias = bias.reshape(self.num_head, self.dim_head)
+        mean = bias.mean(dim=-1, keepdim=True)
+        std = bias.std(dim=-1, keepdim=True, correction=0)
+        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in))
+        ffn_in_bias_normalized = bias_normalized.reshape(self.dim_in)
+        
+        # For ffn_out's weights
+        weight = self.ffn_out_weight
+        weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
+        mean = weight.mean(dim=-1, keepdim=True)
+        std = weight.std(dim=-1, keepdim=True, correction=0)
+        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in))
+        ffn_out_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
+        ffn_out_weight_normalized = ffn_out_weight_normalized.T
+        
+        # For ffn_out's bias
+        bias = self.ffn_out_bias
+        bias = bias.reshape(self.num_head, self.dim_head)
+        mean = bias.mean(dim=-1, keepdim=True)
+        std = bias.std(dim=-1, keepdim=True, correction=0)
+        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in)) # shift to zero
+        ffn_out_bias_normalized = bias_normalized.reshape(self.dim_in)
+                
+        return v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized
         
     def reparam(self):
         if self.attn_s:
+            
             C = self.qkv.weight.shape[1] # [C*3, C]
             
             # Reparam first shortcut
@@ -296,11 +363,12 @@ class iRMB(nn.Module):
             self.attn_weight = self.attn_weight * self.beta
             
             # Reparam third shortcut
+            """
             self.ffn_out.weight.requires_grad_(False)
             self.ffn_out.weight = self.ffn_out.weight * self.theta
             self.ffn_out.bias.requires_grad_(False)
             self.ffn_out.bias = self.ffn_out.bias * self.theta
-            
+            """
 
 class EMO(nn.Module):
     def __init__(self, dim_in=3, num_classes=1000, img_size=224, depths=[1, 2, 4, 2], 
@@ -399,7 +467,6 @@ class EMO(nn.Module):
         if self.training:
             for blk in self.stage0:
                 x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
-            x = x.permute(0, 2, 3, 1) # B, H, W, C
             for blk in self.stage1:
                 x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage2:
@@ -424,10 +491,7 @@ class EMO(nn.Module):
     def forward(self, x):
         x = self.forward_features(x)
         #x = self.norm(x)
-        if self.training:
-            x = reduce(x, 'b h w c-> b c', 'mean')
-        else:
-            x = reduce(x, 'b n c-> b c', 'mean')
+        x = reduce(x, 'b n c-> b c', 'mean')
             
         x = self.pre_head(x)
         x = self.head(x)
@@ -442,8 +506,7 @@ class EMO(nn.Module):
             blk.reparam()
         for blk in self.stage4:
             blk.reparam()
-
-
+        
         
 
 @MODEL.register_module

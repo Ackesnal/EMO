@@ -410,6 +410,7 @@ class CLS():
         elif self.cfg.mode in ['bilevel_opt']:
             self.bilevel_train()
         else:
+            self.net.module.reparam()
             print('Start inference speed testing...')
             inference_speed = self.speed_test(self.net)
             print('inference_speed (inaccurate):', inference_speed, 'images/s')
