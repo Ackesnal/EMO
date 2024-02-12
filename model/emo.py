@@ -11,7 +11,6 @@ import torch.utils.checkpoint as ckpt
 import torch.nn.functional as F
 import torch.nn as nn
 import copy
-from flash_attn.flash_attn_triton import _flash_attn_forward
 
 inplace = True
 
