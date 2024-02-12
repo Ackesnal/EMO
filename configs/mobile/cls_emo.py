@@ -49,11 +49,11 @@ trainer.scheduler_kwargs = dict(
 	patience_iters=0, patience_epochs=0, decay_iters=0, decay_epochs=0, cycle_decay=0.1,)
 
 trainer.data = _Namespace()
-trainer.data.batch_size = 2048
+trainer.data.batch_size = 1024
 trainer.data.batch_size_per_gpu = None
 trainer.data.batch_size_test = None
 trainer.data.batch_size_per_gpu_test = 125
-trainer.data.num_workers_per_gpu = 4
+trainer.data.num_workers_per_gpu = 8
 trainer.data.drop_last = True
 trainer.data.pin_memory = True
 trainer.data.persistent_workers = False
@@ -84,7 +84,7 @@ loss.loss_terms = [
 #loss.loss_terms = [
 #	dict(type='CLSKDLoss', name='CLSKDLoss', cfg=tea_model),
 #]
-loss.clip_grad = 1.0
+loss.clip_grad = 5e-2
 loss.create_graph = False
 loss.retain_graph = False
 
