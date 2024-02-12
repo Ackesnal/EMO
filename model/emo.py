@@ -96,7 +96,7 @@ class iRMB(nn.Module):
             self.ffn_in_bias = nn.Parameter(torch.rand((dim_in)))
             self.ffn_out_weight = nn.Parameter(torch.rand((dim_in, dim_in)))
             self.ffn_out_bias = nn.Parameter(torch.rand((dim_in)))
-            self.ffn_act = nn.SiLU()
+            self.ffn_act = nn.Sigmoid()
             
             # drop paths
             self.drop_path_1 = DropPath(drop_path) if drop_path else nn.Identity()
@@ -136,20 +136,20 @@ class iRMB(nn.Module):
                                      out_channels=dim_out,
                                      kernel_size=1,
                                      stride=1)
-            self.post_norm = nn.LayerNorm(dim_out)
+            self.post_norm = nn.LayerNorm(dim_head, elementwise_affine=False)
 
     def forward(self, x):
         if self.training:
             # Case 1: Normal multi-branch layer
             if self.attn_s:
                 # Shortcut 1    
-                v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized = self.stadardization()
+                q_weight_normalized, q_bias_normalized, k_weight_normalized, k_bias_normalized, v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized = self.stadardization()
                 
                 shortcut = rearrange(x, 'b n (nh hc) -> (b nh) n hc', nh=self.num_head) # B*nh, N, C/nh
                 
                 # Calculate Query (Q), Key (K) and Value (V)
-                q = torch.nn.functional.linear(x, self.q_weight, self.q_bias) # B, N, C
-                k = torch.nn.functional.linear(x, self.k_weight, self.k_bias) # B, N, C
+                q = torch.nn.functional.linear(x, q_weight_normalized, q_bias_normalized) # B, N, C
+                k = torch.nn.functional.linear(x, k_weight_normalized, k_bias_normalized) # B, N, C
                 v = torch.nn.functional.linear(x, v_weight_normalized, v_bias_normalized) # B, N, C
                 
                 # Reshape
@@ -158,10 +158,12 @@ class iRMB(nn.Module):
                 v = rearrange(v, 'b n (nh hc) -> (b nh) n hc', nh=self.num_head) # B*nh, N, C//nh
                 
                 # Add shortcut to V
-                v = v * 0.1 + shortcut # B*nh, N, C//nh
+                v = v * 0.1 + shortcut * 0.95 # B*nh, N, C//nh
                     
                 # Shortcut 2
                 shortcut = rearrange(v, '(b nh) n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
+                #if x.get_device() == 0:
+                #    print("v + shortcut:", shortcut.mean(-1).mean(), shortcut.var(-1).mean(), shortcut.max(), shortcut.min())
                     
                 # Calculate Attention (A) and attended X
                 attn = torch.bmm(q, k*self.scale).softmax(dim=-1) # B*nh, N, N
@@ -199,31 +201,49 @@ class iRMB(nn.Module):
                     x_conv5 = 0
                     x_conv7 = 0
                 
+                #if x.get_device() == 0:
+                #    print("x_spa:", x_spa.mean(-1).mean(), x_spa.var(-1).mean(), x_spa.max(), x_spa.min())
                 # Fuse the outputs
                 x = (x_spa * self.attn_weight + \
                     x_conv3 * self.conv3_weight + \
                     x_conv5 * self.conv5_weight + \
                     x_conv7 * self.conv7_weight) * 0.1 + \
-                    shortcut # B, N, C
+                    shortcut * 0.95 # B, N, C
+                #if x.get_device() == 0:
+                #    print("x_spa + shortcut:", x.mean(-1).mean(), x.var(-1).mean(), x.max(), x.min())
                 
                 # FFN
                 # Shortcut 3
                 shortcut = x # B, N, C
                 x = torch.nn.functional.linear(x, ffn_in_weight_normalized, ffn_in_bias_normalized)
-                x = x * 0.1 + shortcut
+                #if x.get_device() == 0:
+                #    print("ffn in:", x.mean(-1).mean(), x.var(-1).mean(), x.max(), x.min())
+                x = x * 0.1 + shortcut * 0.95
+                #if x.get_device() == 0:
+                #    print("ffn in + shortcut:", x.mean(-1).mean(), x.var(-1).mean(), x.max(), x.min())
                 
                 shortcut = x # B, N, C
-                x = self.ffn_act(x)
-                x = (x - 0.0070) * 0.1 + shortcut
+                x = self.ffn_act(x) - 0.5
+                #if x.get_device() == 0:
+                #    print("activation:", x.mean(-1).mean(), x.var(-1).mean(), x.max(), x.min())
+                x = x * 0.1 + shortcut * 0.95
+                #if x.get_device() == 0:
+                #    print("activation + shortcut:", x.mean(-1).mean(), x.var(-1).mean(), x.max(), x.min())
                 
                 shortcut = x # B, N, C
                 x = torch.nn.functional.linear(x, ffn_out_weight_normalized, ffn_out_bias_normalized)
-                x = x * 0.1 + shortcut
-                            
-                if x.get_device()==0 and self.v_weight.grad is not None:
+                #if x.get_device() == 0:
+                #    print("ffn out:", x.mean(-1).mean(), x.var(-1).mean(), x.max(), x.min())
+                x = x * 0.1 + shortcut * 0.95
+                #if x.get_device() == 0:
+                #    print("ffn out + activation:", x.mean(-1).mean(), x.var(-1).mean(), x.max(), x.min())
+                #    print("\n\n")
+                
+                #if x.get_device() == 0 and self.v_weight.grad is not None:
                 #    print(self.ffn_out_weight.requires_grad, self.ffn_out_weight.grad)
-                #    print(self.v_weight.requires_grad, v_weight_normalized.requires_grad, x.requires_grad)
-                    print(self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
+                #    print("v:", self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
+                #    print("x:", x.var(-1).mean(), x.mean(-1).mean(), x.max(), x.min())
+                #    print(self.ffn_out_weight.grad.mean(), self.ffn_out_weight.grad.max(), self.ffn_out_weight.grad.min())
                 #    print(self.qkv.weight.grad.mean(), self.qkv.weight.grad.max(), self.qkv.weight.grad.min())
                 #    print(x.var(-1), x.mean(-1), x.max(-1), x.min(-1))
                 return x
@@ -239,8 +259,11 @@ class iRMB(nn.Module):
                 x = self.conv_local(x) # B, 2C, H/2, W/2
                 x = self.ffn_out(x) # B, 2C, H/2, W/2
                     
-                x = rearrange(x, 'b c (h n1) (w n2) -> (b n1 n2) (h w) c', n1=self.n1_output, n2=self.n2_output) 
+                x = rearrange(x, 'b (nh hc) (h n1) (w n2) -> (b n1 n2) (h w) nh hc', nh=self.num_head, n1=self.n1_output, n2=self.n2_output) 
                 x = self.post_norm(x)
+                x = rearrange(x, 'b n nh hc -> b n (nh hc)')
+                #if x.get_device() == 0:
+                #    print("x:", x.var(-1, correction=0).mean(), x.mean(-1).mean(), x.max(), x.min())
                 return x
                     
         else:
@@ -261,18 +284,53 @@ class iRMB(nn.Module):
                 # Convert x to original x
                 if self.window_input:
                     x = rearrange(x, '(b n1 n2) (h w) c -> b c (h n1) (w n2)', n1=self.n1_input, n2=self.n2_input, h=self.window_size)
-                        
+                
                 # FFN
                 x = self.ffn_in(x) # B, C, H, W
                 x = self.conv_local(x) # B, 2C, H/2, W/2                    
                 x = self.ffn_out(x) # B, 2C, H/2, W/2
                     
-                x = rearrange(x, 'b c (h n1) (w n2) -> (b n1 n2) (h w) c', n1=self.n1_output, n2=self.n2_output)
+                x = rearrange(x, 'b (nh hc) (h n1) (w n2) -> (b n1 n2) (h w) nh hc', nh=self.num_head, n1=self.n1_output, n2=self.n2_output) 
                 x = self.post_norm(x)
+                x = rearrange(x, 'b n nh hc -> b n (nh hc)') 
                 return x
                 
                 
     def stadardization(self):
+        # For Q's weights
+        weight = self.q_weight
+        weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
+        mean = weight.mean(dim=-1, keepdim=True)
+        std = weight.std(dim=-1, keepdim=True, correction=0)
+        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in))
+        q_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
+        q_weight_normalized = q_weight_normalized.T
+        
+        # For Q's bias
+        bias = self.q_bias
+        bias = bias.reshape(self.num_head, self.dim_head)
+        mean = bias.mean(dim=-1, keepdim=True)
+        std = bias.std(dim=-1, keepdim=True, correction=0)
+        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in))
+        q_bias_normalized = bias_normalized.reshape(self.dim_in)
+        
+        # For K's weights
+        weight = self.k_weight
+        weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
+        mean = weight.mean(dim=-1, keepdim=True)
+        std = weight.std(dim=-1, keepdim=True, correction=0)
+        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in))
+        k_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
+        k_weight_normalized = k_weight_normalized.T
+        
+        # For K's bias
+        bias = self.k_bias
+        bias = bias.reshape(self.num_head, self.dim_head)
+        mean = bias.mean(dim=-1, keepdim=True)
+        std = bias.std(dim=-1, keepdim=True, correction=0)
+        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in))
+        k_bias_normalized = bias_normalized.reshape(self.dim_in)
+        
         # For V's weights
         weight = self.v_weight
         weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
@@ -323,8 +381,8 @@ class iRMB(nn.Module):
         std = bias.std(dim=-1, keepdim=True, correction=0)
         bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in)) # shift to zero
         ffn_out_bias_normalized = bias_normalized.reshape(self.dim_in)
-                
-        return v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized
+                 
+        return q_weight_normalized, q_bias_normalized, k_weight_normalized, k_bias_normalized, v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized
         
     def reparam(self):
         if self.attn_s:            
@@ -411,8 +469,12 @@ class EMO(nn.Module):
         elif isinstance(m, (nn.LayerNorm, nn.GroupNorm, nn.BatchNorm1d, 
                             nn.BatchNorm2d, nn.BatchNorm3d, nn.InstanceNorm1d, 
                             nn.InstanceNorm2d, nn.InstanceNorm3d)):
-            nn.init.zeros_(m.bias)
-            nn.init.ones_(m.weight)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
+            if m.weight is not None:
+                nn.init.ones_(m.weight)
+        elif isinstance(m, (nn.Parameter)):
+            trunc_normal_(m.data, std=.02)
             
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -447,15 +509,15 @@ class EMO(nn.Module):
     def forward_features(self, x):
         if self.training:
             for blk in self.stage0:
-                x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
+                x = ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage1:
-                x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
+                x = ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage2:
-                x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
+                x = ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage3:
-                x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
+                x = ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage4:
-                x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
+                x = ckpt.checkpoint(blk, x.requires_grad_(True))
         else:
             for blk in self.stage0:
                 x = blk(x)
@@ -549,7 +611,7 @@ def FastAllSelfAttention_8M_1G_SingleBranch(pretrained=False, **kwargs):
 @MODEL.register_module
 def FastAllSelfAttention_8M_1G_4BranchInStage4(pretrained=False, **kwargs):
     model = EMO(# dim_in=3, num_classes=1000, img_size=224,
-                depths=[3, 3, 17, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], dim_heads=[16, 16, 32, 32],
+                depths=[5, 5, 13, 7], stem_dim=24, embed_dims=[48, 96, 192, 384], dim_heads=[16, 16, 32, 32],
                 norm_layers=['ln_2d', 'ln_1d', 'ln_1d', 'ln_1d'], act_layers=['silu', 'silu', 'silu', 'silu'],
                 dw_kss=[3, 3, 5, 5], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
                 qkv_bias=True, attn_drop=0., drop_path=0.02, pre_dim=0,
