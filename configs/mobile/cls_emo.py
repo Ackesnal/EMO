@@ -34,7 +34,7 @@ model.model_kwargs = dict(pretrained=False, checkpoint_path='', ema=False, stric
 
 # =========> optimizer <=================================
 optim = _Namespace()
-optim.lr = 1e-2
+optim.lr = 5e-3
 optim.optim_kwargs = dict(name='adamw', betas=(0.9, 0.999), eps=1e-8, weight_decay=0.05, amsgrad=False)
 # =========> trainer <=================================
 trainer = _Namespace()
@@ -45,7 +45,7 @@ trainer.cuda_deterministic = False
 trainer.epoch_full = 300
 trainer.scheduler_kwargs = dict(
 	name='cosine', lr_noise=None, noise_pct=0.67, noise_std=1.0, noise_seed=42, lr_min=1e-6,
-	warmup_lr=1e-4, warmup_iters=-1, cooldown_iters=0, warmup_epochs=20, cooldown_epochs=0, use_iters=True,
+	warmup_lr=1e-5, warmup_iters=-1, cooldown_iters=0, warmup_epochs=20, cooldown_epochs=0, use_iters=True,
 	patience_iters=0, patience_epochs=0, decay_iters=0, decay_epochs=0, cycle_decay=0.1,)
 
 trainer.data = _Namespace()

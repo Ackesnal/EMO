@@ -239,10 +239,10 @@ class iRMB(nn.Module):
                 #    print("ffn out + activation:", x.mean(-1).mean(), x.var(-1).mean(), x.max(), x.min())
                 #    print("\n\n")
                 
-                #if x.get_device() == 0 and self.v_weight.grad is not None:
+                if x.get_device() == 0 and self.v_weight.grad is not None:
                 #    print(self.ffn_out_weight.requires_grad, self.ffn_out_weight.grad)
-                #    print("v:", self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
-                #    print("x:", x.var(-1).mean(), x.mean(-1).mean(), x.max(), x.min())
+                    print("v:", self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
+                    print("x:", x.var(-1).mean(), x.mean(-1).mean(), x.max(), x.min())
                 #    print(self.ffn_out_weight.grad.mean(), self.ffn_out_weight.grad.max(), self.ffn_out_weight.grad.min())
                 #    print(self.qkv.weight.grad.mean(), self.qkv.weight.grad.max(), self.qkv.weight.grad.min())
                 #    print(x.var(-1), x.mean(-1), x.max(-1), x.min(-1))
