@@ -325,7 +325,7 @@ class CLS():
     @torch.no_grad()
     def test_net(self, net, name=''):
         self.reset(isTrain=False, train_mode=False)
-        net.module.reparam()
+        #net.module.reparam()
         batch_idx = 0
         test_length = self.cfg.data.test_size
         test_loader = iter(self.test_loader)
