@@ -44,7 +44,7 @@ trainer.resume_dir = ''
 trainer.cuda_deterministic = False
 trainer.epoch_full = 300
 trainer.scheduler_kwargs = dict(
-	name='cosine', lr_noise=None, noise_pct=0.67, noise_std=1.0, noise_seed=42, lr_min=1e-7,
+	name='cosine', lr_noise=None, noise_pct=0.67, noise_std=1.0, noise_seed=42, lr_min=1e-8,
 	warmup_lr=0, warmup_iters=-1, cooldown_iters=0, warmup_epochs=20, cooldown_epochs=0, use_iters=True,
 	patience_iters=0, patience_epochs=0, decay_iters=0, decay_epochs=0, cycle_decay=0.1,)
 

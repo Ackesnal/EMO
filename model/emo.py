@@ -66,7 +66,7 @@ class iRMB(nn.Module):
             self.k_bias = nn.Parameter(torch.rand((dim_in)))
             self.v_weight = nn.Parameter(torch.rand((dim_in, dim_in)))
             self.v_bias = nn.Parameter(torch.rand((dim_in)))
-            self.attn_weight = 0.25 if self.conv_branch else 1
+            self.attn_beta = 0.25 if self.conv_branch else 1
             
             self.attn_mask = 0
             self.conv_mask = 0
@@ -77,9 +77,9 @@ class iRMB(nn.Module):
             self.drop = attn_drop
             
             # Convolution branches
-            self.conv3_weight = 0.25
-            self.conv5_weight = 0.25
-            self.conv7_weight = 0.25
+            self.conv3_beta = 0.25
+            self.conv5_beta = 0.25
+            self.conv7_beta = 0.25
             if self.conv_branch:
                 self.conv3_weight = nn.Parameter(torch.rand((dim_in, 1, 3, 3)))
                 self.conv3_bias = nn.Parameter(torch.rand((dim_in)))
@@ -112,6 +112,8 @@ class iRMB(nn.Module):
             self.gamma_3 = nn.Parameter(torch.zeros(1))
             self.gamma_4 = nn.Parameter(torch.zeros(1))
             self.gamma_5 = nn.Parameter(torch.zeros(1))
+            
+            self.register_buffer('eps', torch.tensor(1e-12, requires_grad=False), persistent=False)
         else:
             assert dim_out % dim_head == 0, 'dim should be divisible by num_heads'
             self.dim_head = dim_head
@@ -145,7 +147,7 @@ class iRMB(nn.Module):
             # Case 1: Normal multi-branch layer
             if self.attn_s:
                 # Shortcut 1    
-                q_weight_normalized, q_bias_normalized, k_weight_normalized, k_bias_normalized, v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized = self.stadardization()
+                q_weight_normalized, q_bias_normalized, k_weight_normalized, k_bias_normalized, v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized, conv3_weight_normalized, conv3_bias_normalized, conv5_weight_normalized, conv5_bias_normalized, conv7_weight_normalized, conv7_bias_normalized = self.parameter_stadardization()
                 
                 shortcut = rearrange(x, 'b n (nh hc) -> (b nh) n hc', nh=self.num_head) # B*nh, N, C/nh
                 
@@ -177,35 +179,40 @@ class iRMB(nn.Module):
                     x_conv = rearrange(v, '(b nh) (h w) hc -> b (nh hc) h w', nh=self.num_head, h=self.window_size, w=self.window_size) # B, C, h, w
                     # Depth-wise convolutions
                     x_conv3 = torch.nn.functional.conv2d(input = x_conv, 
-                                                         weight = self.conv3_weight_orthogonal, 
-                                                         bias = self.conv3_bias_zerocentric, 
+                                                         weight = conv3_weight_normalized, 
+                                                         bias = conv3_bias_normalized, 
                                                          stride = 1, 
                                                          padding = 'same',
                                                          groups = self.dim_in) # B, C, h, w
                     
                     x_conv5 = torch.nn.functional.conv2d(input = x_conv, 
-                                                         weight = self.conv5_weight_orthogonal, 
-                                                         bias = self.conv5_bias_zerocentric, 
+                                                         weight = conv5_weight_normalized, 
+                                                         bias = conv5_bias_normalized, 
                                                          stride = 1, 
                                                          padding = 'same',
                                                          groups = self.dim_in) # B, C, h, w
                     
                     x_conv7 = torch.nn.functional.conv2d(input = x_conv, 
-                                                         weight = self.conv7_weight_orthogonal, 
-                                                         bias = self.conv7_bias_zerocentric, 
+                                                         weight = conv7_weight_normalized, 
+                                                         bias = conv7_bias_normalized, 
                                                          stride = 1, 
                                                          padding = 'same',
                                                          groups = self.dim_in) # B, C, h, w
+                                                         
+                    x_conv3 = rearrange(x_conv3, 'b c h w -> b (h w) c') # B, N, C
+                    x_conv5 = rearrange(x_conv5, 'b c h w -> b (h w) c') # B, N, C
+                    x_conv7 = rearrange(x_conv7, 'b c h w -> b (h w) c') # B, N, C
+                    
                 else:
                     x_conv3 = 0
                     x_conv5 = 0
                     x_conv7 = 0
                 
                 # Fuse the outputs
-                x_spa = x_spa * self.attn_weight + \
-                        x_conv3 * self.conv3_weight + \
-                        x_conv5 * self.conv5_weight + \
-                        x_conv7 * self.conv7_weight
+                x_spa = x_spa * self.attn_beta + \
+                        x_conv3 * self.conv3_beta + \
+                        x_conv5 * self.conv5_beta + \
+                        x_conv7 * self.conv7_beta
                 
                 x = self.drop_path(x_spa * self.gamma_2) + shortcut # B, N, C
                 
@@ -275,95 +282,76 @@ class iRMB(nn.Module):
                 x = rearrange(x, 'b n nh hc -> b n (nh hc)') 
                 return x
         """
-                
-                
-    def stadardization(self):
-        # For Q's weights
-        weight = self.q_weight
-        weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
-        mean = weight.mean(dim=-1, keepdim=True)
-        std = weight.std(dim=-1, keepdim=True, correction=0)
-        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
-        q_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
-        q_weight_normalized = q_weight_normalized.T
+                                                                          
+    def stadardization(self, W):
+        num_dim = len(W.shape)
+        if num_dim == 1:
+            # bias
+            W = W.reshape(self.num_head, self.dim_head)
+        elif num_dim == 2:
+            # Linear weights
+            W = W.reshape(self.dim_in, self.num_head, self.dim_head)
+        elif num_dim == 4:
+            # Conv weights
+            k = W.shape[-1]
+            W = W.reshape(self.dim_in, -1)
+         
+        mean = W.mean(dim=-1, keepdim=True)
+        var = W.var(dim=-1, keepdim=True, correction=0)
+        scale = torch.rsqrt(torch.maximum(var * self.dim_in, self.eps))
+        W = (W - mean) * scale
         
-        # For Q's bias
-        bias = self.q_bias
-        bias = bias.reshape(self.num_head, self.dim_head)
-        mean = bias.mean(dim=-1, keepdim=True)
-        std = bias.std(dim=-1, keepdim=True, correction=0)
-        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
-        q_bias_normalized = bias_normalized.reshape(self.dim_in)
+        if num_dim == 1: 
+            W = W.reshape(self.dim_in)
+        elif num_dim == 2:
+            W = W.reshape(self.dim_in, self.dim_in).T
+        elif num_dim == 4:
+            W = W.reshape(self.dim_in, 1, k, k)
         
-        # For K's weights
-        weight = self.k_weight
-        weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
-        mean = weight.mean(dim=-1, keepdim=True)
-        std = weight.std(dim=-1, keepdim=True, correction=0)
-        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
-        k_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
-        k_weight_normalized = k_weight_normalized.T
+        return W
         
-        # For K's bias
-        bias = self.k_bias
-        bias = bias.reshape(self.num_head, self.dim_head)
-        mean = bias.mean(dim=-1, keepdim=True)
-        std = bias.std(dim=-1, keepdim=True, correction=0)
-        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
-        k_bias_normalized = bias_normalized.reshape(self.dim_in)
+    def parameter_stadardization(self):
+        # For Q
+        q_weight_normalized = self.stadardization(self.q_weight)
+        q_bias_normalized = self.stadardization(self.q_bias)
         
-        # For V's weights
-        weight = self.v_weight
-        weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
-        mean = weight.mean(dim=-1, keepdim=True)
-        std = weight.std(dim=-1, keepdim=True, correction=0)
-        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
-        v_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
-        v_weight_normalized = v_weight_normalized.T
+        # For K
+        k_weight_normalized = self.stadardization(self.k_weight)
+        k_bias_normalized = self.stadardization(self.k_bias)
         
-        # For V's bias
-        bias = self.v_bias
-        bias = bias.reshape(self.num_head, self.dim_head)
-        mean = bias.mean(dim=-1, keepdim=True)
-        std = bias.std(dim=-1, keepdim=True, correction=0)
-        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
-        v_bias_normalized = bias_normalized.reshape(self.dim_in)
+        # For V
+        v_weight_normalized = self.stadardization(self.v_weight)
+        v_bias_normalized = self.stadardization(self.v_bias)
         
-        # For ffn_in's weights
-        weight = self.ffn_in_weight
-        weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
-        mean = weight.mean(dim=-1, keepdim=True)
-        std = weight.std(dim=-1, keepdim=True, correction=0)
-        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
-        ffn_in_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
-        ffn_in_weight_normalized = ffn_in_weight_normalized.T
+        # For ffn_in
+        ffn_in_weight_normalized = self.stadardization(self.ffn_in_weight)
+        ffn_in_bias_normalized = self.stadardization(self.ffn_in_bias)
         
-        # For ffn_in's bias
-        bias = self.ffn_in_bias
-        bias = bias.reshape(self.num_head, self.dim_head)
-        mean = bias.mean(dim=-1, keepdim=True)
-        std = bias.std(dim=-1, keepdim=True, correction=0)
-        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
-        ffn_in_bias_normalized = bias_normalized.reshape(self.dim_in)
+        # For ffn_out
+        ffn_out_weight_normalized = self.stadardization(self.ffn_out_weight)
+        ffn_out_bias_normalized = self.stadardization(self.ffn_out_bias)
         
-        # For ffn_out's weights
-        weight = self.ffn_out_weight
-        weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
-        mean = weight.mean(dim=-1, keepdim=True)
-        std = weight.std(dim=-1, keepdim=True, correction=0)
-        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
-        ffn_out_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
-        ffn_out_weight_normalized = ffn_out_weight_normalized.T
-        
-        # For ffn_out's bias
-        bias = self.ffn_out_bias
-        bias = bias.reshape(self.num_head, self.dim_head)
-        mean = bias.mean(dim=-1, keepdim=True)
-        std = bias.std(dim=-1, keepdim=True, correction=0)
-        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in) + 1e-12) # shift to zero
-        ffn_out_bias_normalized = bias_normalized.reshape(self.dim_in)
-                 
-        return q_weight_normalized, q_bias_normalized, k_weight_normalized, k_bias_normalized, v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized
+        if self.conv_branch:
+            # For 3x3 conv
+            conv3_weight_normalized = self.stadardization(self.conv3_weight)
+            conv3_bias_normalized = self.stadardization(self.conv3_bias)
+            
+            # For 5x5 conv
+            conv5_weight_normalized = self.stadardization(self.conv5_weight)
+            conv5_bias_normalized = self.stadardization(self.conv5_bias)
+            
+            # For 7x7 conv
+            conv7_weight_normalized = self.stadardization(self.conv7_weight)
+            conv7_bias_normalized = self.stadardization(self.conv7_bias)
+        else:
+            conv3_weight_normalized = None
+            conv3_bias_normalized = None
+            conv5_weight_normalized = None
+            conv5_bias_normalized = None
+            conv7_weight_normalized = None
+            conv7_bias_normalized = None
+            
+        return q_weight_normalized, q_bias_normalized, k_weight_normalized, k_bias_normalized, v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized, conv3_weight_normalized, conv3_bias_normalized, conv5_weight_normalized, conv5_bias_normalized, conv7_weight_normalized, conv7_bias_normalized
         
     def reparam(self):
         if self.attn_s:            
