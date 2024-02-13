@@ -85,6 +85,7 @@ loss.loss_terms = [
 #	dict(type='CLSKDLoss', name='CLSKDLoss', cfg=tea_model),
 #]
 loss.clip_grad = 1
+loss.clip_mode = "agc" # [norm, value, agc]
 loss.create_graph = False
 loss.retain_graph = False
 

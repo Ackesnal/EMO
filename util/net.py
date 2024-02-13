@@ -16,6 +16,7 @@ from util.util import log_msg
 from fvcore.nn import FlopCountAnalysis, flop_count_table
 from timm.utils import NativeScaler, ApexScaler
 from contextlib import suppress, contextmanager
+from torch.cuda.amp import GradScaler, autocast
 
 
 def init_training(cfg):
@@ -232,6 +233,7 @@ def get_loss_scaler(scaler='native'):
 		'none': None,
 		'native': NativeScaler(),
 		'apex': ApexScaler(),
+		'grad': GradScaler(),
 	}
 	return scaler_dict[scaler]
 

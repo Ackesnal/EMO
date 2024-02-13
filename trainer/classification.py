@@ -142,16 +142,12 @@ class CLS():
     def backward_term(self, loss_term, optim):
         optim.zero_grad()
         if self.loss_scaler:
-            self.loss_scaler(loss_term, optim, clip_grad=self.cfg.loss.clip_grad, parameters=self.net.parameters(), create_graph=self.cfg.loss.create_graph)
+            self.loss_scaler(loss_term, optim, clip_grad=self.cfg.loss.clip_grad, clip_mode=self.cfg.loss.clip_mode, parameters=self.net.parameters(), create_graph=self.cfg.loss.create_graph)
         else:
             loss_term.backward(retain_graph=self.cfg.loss.retain_graph)
             if self.cfg.loss.clip_grad is not None:
-                dispatch_clip_grad(self.net.parameters(), value=self.cfg.loss.clip_grad)
+                dispatch_clip_grad(self.net.parameters(), value=self.cfg.loss.clip_grad, mode="agc")
             optim.step()
-        #for name, param in self.net.named_parameters():
-            #if param.requires_grad and ("qk.weight" in name or "v.weight" in name):
-                #print(name, param.grad.max())
-            #if param.requires_grad and "layer1.weight" in name:
 
     def check_bn(self):
         if hasattr(self.net, 'module'):
