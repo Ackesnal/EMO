@@ -98,8 +98,7 @@ class iRMB(nn.Module):
             self.ffn_act = nn.Sigmoid()
             
             # drop paths
-            self.drop_path_1 = DropPath(drop_path) if drop_path else nn.Identity()
-            self.drop_path_2 = DropPath(drop_path) if drop_path else nn.Identity()
+            self.drop_path = DropPath(drop_path) if drop_path else nn.Identity()
             
             self.qkv = nn.Linear(self.dim_in, self.dim_in*3)
             self.qkv.weight.requires_grad_(False)
@@ -107,6 +106,12 @@ class iRMB(nn.Module):
             self.ffn_out = nn.Linear(self.dim_in, self.dim_in)
             self.ffn_out.weight.requires_grad_(False)
             self.ffn_out.bias.requires_grad_(False)
+            
+            self.gamma_1 = nn.Parameter(torch.zeros(1))
+            self.gamma_2 = nn.Parameter(torch.zeros(1))
+            self.gamma_3 = nn.Parameter(torch.zeros(1))
+            self.gamma_4 = nn.Parameter(torch.zeros(1))
+            self.gamma_5 = nn.Parameter(torch.zeros(1))
         else:
             assert dim_out % dim_head == 0, 'dim should be divisible by num_heads'
             self.dim_head = dim_head
@@ -155,11 +160,11 @@ class iRMB(nn.Module):
                 v = rearrange(v, 'b n (nh hc) -> (b nh) n hc', nh=self.num_head) # B*nh, N, C//nh
                 
                 # Add shortcut to V
-                v = v * 0.1 + shortcut * 0.95 # B*nh, N, C//nh
+                v = self.drop_path(v * self.gamma_1) + shortcut # B*nh, N, C//nh
                     
                 # Shortcut 2
                 shortcut = rearrange(v, '(b nh) n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
-                
+                    
                 # Calculate Attention (A) and attended X
                 attn = torch.bmm(q, k*self.scale).softmax(dim=-1) # B*nh, N, N
                 x_spa = torch.bmm(attn, v) # B*nh, N, C//nh
@@ -202,28 +207,26 @@ class iRMB(nn.Module):
                         x_conv5 * self.conv5_weight + \
                         x_conv7 * self.conv7_weight
                 
-                x = self.drop_path_1(x_spa) * 0.1 +  shortcut * 0.95 # B, N, C
+                x = self.drop_path(x_spa * self.gamma_2) + shortcut # B, N, C
                 
                 # FFN
                 # Shortcut 3
                 shortcut = x # B, N, C
                 x = torch.nn.functional.linear(x, ffn_in_weight_normalized, ffn_in_bias_normalized)
-                x = x * 0.1 + shortcut * 0.95
+                x = self.drop_path(x * self.gamma_3) + shortcut
                 
                 shortcut = x # B, N, C
                 x = self.ffn_act(x) - 0.5
-                x = x * 0.1 + shortcut * 0.95
+                x = self.drop_path(x * self.gamma_4) + shortcut
                 
                 shortcut = x # B, N, C
                 x = torch.nn.functional.linear(x, ffn_out_weight_normalized, ffn_out_bias_normalized)
-                x = self.drop_path_2(x) * 0.1 + shortcut * 0.95
+                x = self.drop_path(x * self.gamma_5) + shortcut
                 
                 #if x.get_device() == 0 and self.v_weight.grad is not None:
-                #    print(self.ffn_out_weight.requires_grad, self.ffn_out_weight.grad)
                 #    print("v:", self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
                 #    print("x:", x.var(-1).mean(), x.mean(-1).mean(), x.max(), x.min())
                 #    print(self.ffn_out_weight.grad.mean(), self.ffn_out_weight.grad.max(), self.ffn_out_weight.grad.min())
-                #    print(self.qkv.weight.grad.mean(), self.qkv.weight.grad.max(), self.qkv.weight.grad.min())
                 #    print(x.var(-1), x.mean(-1), x.max(-1), x.min(-1))
                 return x
                 
@@ -237,11 +240,12 @@ class iRMB(nn.Module):
                 x = self.ffn_in(x) # B, C, H, W
                 x = self.conv_local(x) # B, 2C, H/2, W/2
                 x = self.ffn_out(x) # B, 2C, H/2, W/2
-                    
+                
                 x = rearrange(x, 'b (nh hc) (h n1) (w n2) -> (b n1 n2) (h w) nh hc', nh=self.num_head, n1=self.n1_output, n2=self.n2_output) 
                 x = self.post_norm(x)
                 x = rearrange(x, 'b n nh hc -> b n (nh hc)')
                 return x  
+        """
         else:
             # Case 1: Normal multi-branch layer
             if self.attn_s:
@@ -270,6 +274,7 @@ class iRMB(nn.Module):
                 x = self.post_norm(x)
                 x = rearrange(x, 'b n nh hc -> b n (nh hc)') 
                 return x
+        """
                 
                 
     def stadardization(self):
@@ -278,7 +283,7 @@ class iRMB(nn.Module):
         weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
         mean = weight.mean(dim=-1, keepdim=True)
         std = weight.std(dim=-1, keepdim=True, correction=0)
-        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in))
+        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
         q_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
         q_weight_normalized = q_weight_normalized.T
         
@@ -287,7 +292,7 @@ class iRMB(nn.Module):
         bias = bias.reshape(self.num_head, self.dim_head)
         mean = bias.mean(dim=-1, keepdim=True)
         std = bias.std(dim=-1, keepdim=True, correction=0)
-        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in))
+        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
         q_bias_normalized = bias_normalized.reshape(self.dim_in)
         
         # For K's weights
@@ -295,7 +300,7 @@ class iRMB(nn.Module):
         weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
         mean = weight.mean(dim=-1, keepdim=True)
         std = weight.std(dim=-1, keepdim=True, correction=0)
-        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in))
+        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
         k_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
         k_weight_normalized = k_weight_normalized.T
         
@@ -304,7 +309,7 @@ class iRMB(nn.Module):
         bias = bias.reshape(self.num_head, self.dim_head)
         mean = bias.mean(dim=-1, keepdim=True)
         std = bias.std(dim=-1, keepdim=True, correction=0)
-        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in))
+        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
         k_bias_normalized = bias_normalized.reshape(self.dim_in)
         
         # For V's weights
@@ -312,7 +317,7 @@ class iRMB(nn.Module):
         weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
         mean = weight.mean(dim=-1, keepdim=True)
         std = weight.std(dim=-1, keepdim=True, correction=0)
-        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in))
+        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
         v_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
         v_weight_normalized = v_weight_normalized.T
         
@@ -321,7 +326,7 @@ class iRMB(nn.Module):
         bias = bias.reshape(self.num_head, self.dim_head)
         mean = bias.mean(dim=-1, keepdim=True)
         std = bias.std(dim=-1, keepdim=True, correction=0)
-        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in))
+        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
         v_bias_normalized = bias_normalized.reshape(self.dim_in)
         
         # For ffn_in's weights
@@ -329,7 +334,7 @@ class iRMB(nn.Module):
         weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
         mean = weight.mean(dim=-1, keepdim=True)
         std = weight.std(dim=-1, keepdim=True, correction=0)
-        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in))
+        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
         ffn_in_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
         ffn_in_weight_normalized = ffn_in_weight_normalized.T
         
@@ -338,7 +343,7 @@ class iRMB(nn.Module):
         bias = bias.reshape(self.num_head, self.dim_head)
         mean = bias.mean(dim=-1, keepdim=True)
         std = bias.std(dim=-1, keepdim=True, correction=0)
-        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in))
+        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
         ffn_in_bias_normalized = bias_normalized.reshape(self.dim_in)
         
         # For ffn_out's weights
@@ -346,7 +351,7 @@ class iRMB(nn.Module):
         weight = weight.reshape(self.dim_in, self.num_head, self.dim_head)
         mean = weight.mean(dim=-1, keepdim=True)
         std = weight.std(dim=-1, keepdim=True, correction=0)
-        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in))
+        weight_normalized = (weight - mean) / (std * math.sqrt(self.dim_in) + 1e-12)
         ffn_out_weight_normalized = weight_normalized.reshape(self.dim_in, self.dim_in)
         ffn_out_weight_normalized = ffn_out_weight_normalized.T
         
@@ -355,7 +360,7 @@ class iRMB(nn.Module):
         bias = bias.reshape(self.num_head, self.dim_head)
         mean = bias.mean(dim=-1, keepdim=True)
         std = bias.std(dim=-1, keepdim=True, correction=0)
-        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in)) # shift to zero
+        bias_normalized = (bias - mean) / (std * math.sqrt(self.dim_in) + 1e-12) # shift to zero
         ffn_out_bias_normalized = bias_normalized.reshape(self.dim_in)
                  
         return q_weight_normalized, q_bias_normalized, k_weight_normalized, k_bias_normalized, v_weight_normalized, v_bias_normalized, ffn_in_weight_normalized, ffn_in_bias_normalized, ffn_out_weight_normalized, ffn_out_bias_normalized
@@ -436,6 +441,7 @@ class EMO(nn.Module):
             self.pre_dim = embed_dims[-1]
         self.head = nn.Linear(self.pre_dim, num_classes)
         self.apply(self._init_weights)
+        self._init_standard_weights()
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Linear, nn.Conv2d)):
@@ -449,8 +455,13 @@ class EMO(nn.Module):
                 nn.init.zeros_(m.bias)
             if m.weight is not None:
                 nn.init.ones_(m.weight)
-        elif isinstance(m, (nn.Parameter)):
-            trunc_normal_(m.data, std=.02)
+            
+    def _init_standard_weights(self):
+        for name, param in self.named_parameters():
+            if "_weight" in name:
+                trunc_normal_(param, std=.02)
+            elif "_bias" in name:
+                nn.init.zeros_(param)
             
     @torch.jit.ignore
     def no_weight_decay(self):
@@ -578,7 +589,7 @@ def FastAllSelfAttention_6M_767M_SingleBranch(pretrained=False, **kwargs):
                 depths=[3, 3, 13, 5], stem_dim=24, embed_dims=[48, 96, 192, 384], dim_heads=[16, 16, 32, 32],
                 norm_layers=['ln_2d', 'ln_1d', 'ln_1d', 'ln_1d'], act_layers=['silu', 'silu', 'silu', 'silu'],
                 dw_kss=[3, 3, 5, 5], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop_path=0.02, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop_path=0.01, pre_dim=0,
                 conv_branchs=[False, False, False, False], conv_local=False,
                 **kwargs)
     return model
@@ -590,7 +601,7 @@ def FastAllSelfAttention_6M_767M_4BranchInStage4(pretrained=False, **kwargs):
                 depths=[3, 3, 13, 5], stem_dim=24, embed_dims=[48, 96, 192, 384], dim_heads=[16, 16, 32, 32],
                 norm_layers=['ln_2d', 'ln_1d', 'ln_1d', 'ln_1d'], act_layers=['silu', 'silu', 'silu', 'silu'],
                 dw_kss=[3, 3, 5, 5], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop_path=0.02, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop_path=0.01, pre_dim=0,
                 conv_branchs=[False, False, False, True], conv_local=False,
                 **kwargs)
     return model
@@ -602,7 +613,7 @@ def FastAllSelfAttention_6M_767M_4BranchInStage34(pretrained=False, **kwargs):
                 depths=[3, 3, 13, 5], stem_dim=24, embed_dims=[48, 96, 192, 384], dim_heads=[16, 16, 32, 32],
                 norm_layers=['ln_2d', 'ln_1d', 'ln_1d', 'ln_1d'], act_layers=['silu', 'silu', 'silu', 'silu'],
                 dw_kss=[3, 3, 5, 5], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop_path=0.02, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop_path=0.01, pre_dim=0,
                 conv_branchs=[False, False, True, True], conv_local=False,
                 **kwargs)
     return model
@@ -613,7 +624,7 @@ def FastAllSelfAttention_6M_767M_4BranchInStage234(pretrained=False, **kwargs):
                 depths=[3, 3, 13, 5], stem_dim=24, embed_dims=[48, 96, 192, 384], dim_heads=[16, 16, 32, 32],
                 norm_layers=['ln_2d', 'ln_1d', 'ln_1d', 'ln_1d'], act_layers=['silu', 'silu', 'silu', 'silu'],
                 dw_kss=[3, 3, 5, 5], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop_path=0.02, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop_path=0.01, pre_dim=0,
                 conv_branchs=[False, True, True, True], conv_local=False,
                 **kwargs)
     return model
@@ -625,7 +636,7 @@ def FastAllSelfAttention_6M_767M_4BranchInStage1234(pretrained=False, **kwargs):
                 depths=[3, 3, 13, 5], stem_dim=24, embed_dims=[48, 96, 192, 384], dim_heads=[16, 16, 32, 32],
                 norm_layers=['ln_2d', 'ln_1d', 'ln_1d', 'ln_1d'], act_layers=['silu', 'silu', 'silu', 'silu'],
                 dw_kss=[3, 3, 5, 5], window_sizes=[7, 7, 7, 7], attn_ss=[True, True, True, True],
-                qkv_bias=True, attn_drop=0., drop_path=0.02, pre_dim=0,
+                qkv_bias=True, attn_drop=0., drop_path=0.01, pre_dim=0,
                 conv_branchs=[True, True, True, True], conv_local=False,
                 **kwargs)
     return model 

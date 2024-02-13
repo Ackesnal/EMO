@@ -146,7 +146,7 @@ class CLS():
         else:
             loss_term.backward(retain_graph=self.cfg.loss.retain_graph)
             if self.cfg.loss.clip_grad is not None:
-                dispatch_clip_grad(self.net.parameters(), value=self.cfg.loss.clip_grad, mode="agc")
+                dispatch_clip_grad(self.net.parameters(), value=self.cfg.loss.clip_grad, mode=self.cfg.loss.clip_mode)
             optim.step()
 
     def check_bn(self):
