@@ -107,11 +107,13 @@ class iRMB(nn.Module):
             self.ffn_out.weight.requires_grad_(False)
             self.ffn_out.bias.requires_grad_(False)
             
-            self.gamma_1 = nn.Parameter(torch.zeros(1))
-            self.gamma_2 = nn.Parameter(torch.zeros(1))
-            self.gamma_3 = nn.Parameter(torch.zeros(1))
-            self.gamma_4 = nn.Parameter(torch.zeros(1))
-            self.gamma_5 = nn.Parameter(torch.zeros(1))
+            #self.gamma_q = nn.Parameter(torch.ones(1) * 0.1)
+            #self.gamma_k = nn.Parameter(torch.ones(1) * 0.1)
+            self.gamma_v = 1 #nn.Parameter(torch.ones(1) * 0.1)
+            self.gamma_attn = 1 #nn.Parameter(torch.ones(1) * 0.1)
+            self.gamma_fin = 1 #nn.Parameter(torch.ones(1) * 0.1)
+            self.gamma_act = 1 #nn.Parameter(torch.ones(1) * 0.1)
+            self.gamma_fout = 1 #nn.Parameter(torch.ones(1) * 0.1)
             
             self.register_buffer('eps', torch.tensor(1e-12, requires_grad=False), persistent=False)
         else:
@@ -162,7 +164,7 @@ class iRMB(nn.Module):
                 v = rearrange(v, 'b n (nh hc) -> (b nh) n hc', nh=self.num_head) # B*nh, N, C//nh
                 
                 # Add shortcut to V
-                v = self.drop_path(v * self.gamma_1) + shortcut # B*nh, N, C//nh
+                v = self.drop_path(v * self.gamma_v) + shortcut # B*nh, N, C//nh
                     
                 # Shortcut 2
                 shortcut = rearrange(v, '(b nh) n hc -> b n (nh hc)', nh=self.num_head) # B, N, C
@@ -214,27 +216,33 @@ class iRMB(nn.Module):
                         x_conv5 * self.conv5_beta + \
                         x_conv7 * self.conv7_beta
                 
-                x = self.drop_path(x_spa * self.gamma_2) + shortcut # B, N, C
+                x = self.drop_path(x_spa * self.gamma_attn) + shortcut # B, N, C
                 
                 # FFN
                 # Shortcut 3
                 shortcut = x # B, N, C
                 x = torch.nn.functional.linear(x, ffn_in_weight_normalized, ffn_in_bias_normalized)
-                x = self.drop_path(x * self.gamma_3) + shortcut
+                x = self.drop_path(x * self.gamma_fin) + shortcut 
                 
                 shortcut = x # B, N, C
                 x = self.ffn_act(x) - 0.5
-                x = self.drop_path(x * self.gamma_4) + shortcut
+                x = self.drop_path(x * self.gamma_act)# + shortcut
                 
                 shortcut = x # B, N, C
                 x = torch.nn.functional.linear(x, ffn_out_weight_normalized, ffn_out_bias_normalized)
-                x = self.drop_path(x * self.gamma_5) + shortcut
+                x = self.drop_path(x * self.gamma_fout) + shortcut
                 
-                #if x.get_device() == 0 and self.v_weight.grad is not None:
-                #    print("v:", self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
+                if x.get_device() == 0 and self.v_weight.grad is not None:
+                #    print("Gamma V:", self.gamma_v.data, self.gamma_v.grad)
+                #    print("Gamma ATTN:", self.gamma_attn.data)
+                #    print("Gamma FFN_IN:", self.gamma_3.data)
+                #    print("Gamma ACT:", self.gamma_4.data)
+                #    print("Gamma FFN_OUT:", self.gamma_5.data)
                 #    print("x:", x.var(-1).mean(), x.mean(-1).mean(), x.max(), x.min())
-                #    print(self.ffn_out_weight.grad.mean(), self.ffn_out_weight.grad.max(), self.ffn_out_weight.grad.min())
-                #    print(x.var(-1), x.mean(-1), x.max(-1), x.min(-1))
+                    print("v:", self.v_weight.grad.mean(), self.v_weight.grad.max(), self.v_weight.grad.min())
+                    print("k:", self.k_weight.grad.mean(), self.k_weight.grad.max(), self.k_weight.grad.min())
+                #    print("ffn_in:", self.ffn_in_weight.grad.mean(), self.ffn_in_weight.grad.max(), self.ffn_in_weight.grad.min())
+                #    print("ffn_out:",self.ffn_out_weight.grad.mean(), self.ffn_out_weight.grad.max(), self.ffn_out_weight.grad.min())
                 return x
                 
             # Case 2: Downsampling layer
@@ -249,7 +257,7 @@ class iRMB(nn.Module):
                 x = self.ffn_out(x) # B, 2C, H/2, W/2
                 
                 x = rearrange(x, 'b (nh hc) (h n1) (w n2) -> (b n1 n2) (h w) nh hc', nh=self.num_head, n1=self.n1_output, n2=self.n2_output) 
-                x = self.post_norm(x)
+                x = self.post_norm(x) #* self.num_head
                 x = rearrange(x, 'b n nh hc -> b n (nh hc)')
                 return x  
         """
@@ -483,15 +491,31 @@ class EMO(nn.Module):
 
     def forward_features(self, x):
         if self.training:
+            i = 1
             for blk in self.stage0:
+                #if x.get_device() == 0:
+                #    print("Layer ", i, ":")
+                #    i = i + 1
                 x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage1:
+                #if x.get_device() == 0:
+                #    print("Layer ", i, ":")
+                #    i = i + 1
                 x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage2:
+                #if x.get_device() == 0:
+                #    print("Layer ", i, ":")
+                #    i = i + 1
                 x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage3:
+                #if x.get_device() == 0:
+                #    print("Layer ", i, ":")
+                #    i = i + 1
                 x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
             for blk in self.stage4:
+                #if x.get_device() == 0:
+                #    print("Layer ", i, ":")
+                #    i = i + 1
                 x = blk(x) #ckpt.checkpoint(blk, x.requires_grad_(True))
         else:
             for blk in self.stage0:
